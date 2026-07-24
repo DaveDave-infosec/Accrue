@@ -30,6 +30,7 @@ type Contributor = {
 function App() {
   const [account, setAccount] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const [creating, setCreating] = useState(false)
 
@@ -56,7 +57,6 @@ function App() {
   const [epochInput, setEpochInput] = useState('')
   const [action, setAction] = useState('')
 
-  // ---- load the list of agreements ----
   const loadAgreements = useCallback(async (): Promise<AgSummary[]> => {
     try {
       const count = Number(await getAgreementCount())
@@ -76,7 +76,6 @@ function App() {
     } catch { return [] }
   }, [])
 
-  // ---- load one agreement + one of its epochs ----
   const loadLedger = useCallback(async (agId: string, epochId: string) => {
     setLoading(true); setErr('')
     try {
@@ -190,6 +189,7 @@ function App() {
 
   async function run(label: string, fn: () => Promise<any>, wantEpoch?: string) {
     if (!account) { setErr('Connect a wallet first.'); return }
+    setBusy(true)
     setAction(label + ' · sending, approve in your wallet...')
     try {
       await fn()
@@ -202,11 +202,14 @@ function App() {
       }
     } catch (e: any) {
       setAction(label + ' · failed: ' + (e?.message || String(e)).slice(0, 150))
+    } finally {
+      setBusy(false)
     }
   }
 
   const connectedRow = contribs.find((c) => c.wallet.toLowerCase() === (account || '').toLowerCase())
   const myClaimable = connectedRow ? genFromWei(connectedRow.claimableWei) : 0
+  const disabled = busy || loading
 
   return (
     <div className="ap">
@@ -216,8 +219,8 @@ function App() {
           {account ? (
             <>
               <span className="ap-acct"><span className="ap-dot" />{shortAddr(account)}</span>
-              <button className="ap-ghost" onClick={switchAccount}>Switch</button>
-              <button className="ap-ghost" onClick={disconnect}>Disconnect</button>
+              <button className="ap-ghost" onClick={switchAccount} disabled={busy}>Switch</button>
+              <button className="ap-ghost" onClick={disconnect} disabled={busy}>Disconnect</button>
             </>
           ) : (
             <button className="ap-connect" onClick={connect}>Connect wallet</button>
@@ -267,18 +270,18 @@ function App() {
       {account && !creating && agreements.length > 0 && (
         <main className="ap-main">
           <section className="ap-agpick">
-            <span className="ap-k">Agreements</span>
-            <div className="ap-agpick-chips">
+            <span className="ap-k">Agreement</span>
+            <select
+              className="ap-select"
+              value={aid}
+              onChange={(e) => selectAgreement(e.target.value)}
+              disabled={disabled}
+            >
               {agreements.map((a) => (
-                <button
-                  key={a.id}
-                  className={`ap-chip ${a.id === aid ? 'is-on' : ''}`}
-                  onClick={() => selectAgreement(a.id)}
-                  title={a.repo}
-                >{a.label}</button>
+                <option key={a.id} value={a.id}>{a.label} — {a.repo}</option>
               ))}
-            </div>
-            <button className="ap-btn ap-btn-sm" onClick={() => setCreating(true)}>New agreement</button>
+            </select>
+            <button className="ap-btn ap-btn-sm" onClick={() => setCreating(true)} disabled={busy}>New agreement</button>
           </section>
 
           <section className="ap-agree">
@@ -301,6 +304,7 @@ function App() {
                   key={id}
                   className={`ap-chip ${id === selectedEpoch ? 'is-on' : ''}`}
                   onClick={() => selectEpoch(id)}
+                  disabled={disabled}
                 >{id}</button>
               ))}
               {epochs.length === 0 && <span className="ap-epochs-none">none settled yet</span>}
@@ -311,9 +315,10 @@ function App() {
                 value={epochInput}
                 onChange={(e) => setEpochInput(e.target.value)}
                 placeholder="load any id"
-                onKeyDown={(e) => { if (e.key === 'Enter') loadTypedEpoch() }}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !disabled) loadTypedEpoch() }}
+                disabled={disabled}
               />
-              <button className="ap-btn ap-btn-sm" onClick={loadTypedEpoch}>Load</button>
+              <button className="ap-btn ap-btn-sm" onClick={loadTypedEpoch} disabled={disabled}>Load</button>
             </div>
           </div>
 
@@ -375,22 +380,22 @@ function App() {
               <div className="ap-actions">
                 <span className="ap-side-label">Actions · permissionless</span>
                 <div className="ap-action">
-                  <input className="ap-input" value={settleId} onChange={(e) => setSettleId(e.target.value)} placeholder="epoch id" />
-                  <button className="ap-btn" onClick={() => run('Settle ' + settleId, () => settleEpoch(account!, aid, settleId), settleId)}>Settle epoch</button>
+                  <input className="ap-input" value={settleId} onChange={(e) => setSettleId(e.target.value)} placeholder="epoch id" disabled={disabled} />
+                  <button className="ap-btn" onClick={() => run('Settle ' + settleId, () => settleEpoch(account!, aid, settleId), settleId)} disabled={disabled}>Settle epoch</button>
                 </div>
                 <div className="ap-action">
-                  <input className="ap-input" value={finalId} onChange={(e) => setFinalId(e.target.value)} placeholder="epoch id" />
-                  <button className="ap-btn" onClick={() => run('Finalize ' + finalId, () => finalizeEpoch(account!, aid, finalId), finalId)}>Finalize epoch</button>
+                  <input className="ap-input" value={finalId} onChange={(e) => setFinalId(e.target.value)} placeholder="epoch id" disabled={disabled} />
+                  <button className="ap-btn" onClick={() => run('Finalize ' + finalId, () => finalizeEpoch(account!, aid, finalId), finalId)} disabled={disabled}>Finalize epoch</button>
                 </div>
                 <div className="ap-action">
-                  <input className="ap-input" value={fundAmt} onChange={(e) => setFundAmt(e.target.value)} placeholder="GEN" />
-                  <button className="ap-btn" onClick={() => run('Fund ' + fundAmt + ' GEN', () => fundPool(account!, aid, BigInt(Math.round(parseFloat(fundAmt || '0') * 1e18))))}>Fund pool</button>
+                  <input className="ap-input" value={fundAmt} onChange={(e) => setFundAmt(e.target.value)} placeholder="GEN" disabled={disabled} />
+                  <button className="ap-btn" onClick={() => run('Fund ' + fundAmt + ' GEN', () => fundPool(account!, aid, BigInt(Math.round(parseFloat(fundAmt || '0') * 1e18))))} disabled={disabled}>Fund pool</button>
                 </div>
-                <button className="ap-btn ap-btn-primary" disabled={myClaimable <= 0} onClick={() => run('Claim', () => claimShare(account!, aid))}>
+                <button className="ap-btn ap-btn-primary" disabled={disabled || myClaimable <= 0} onClick={() => run('Claim', () => claimShare(account!, aid))}>
                   {myClaimable > 0 ? `Claim ${fmtGen(myClaimable)} GEN` : 'Nothing to claim'}
                 </button>
                 {action && <p className="ap-status">{action}</p>}
-                {loading && <p className="ap-status">reading chain...</p>}
+                {loading && !action && <p className="ap-status">reading chain...</p>}
               </div>
             </aside>
           </div>

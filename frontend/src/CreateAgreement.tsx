@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import './CreateAgreement.css'
-import { createAgreement } from './lib/accrue'
+import { createAgreement, getAgreementCount } from './lib/accrue'
 
 type Props = { account: string; onCreated: (aid: string) => void; onCancel: () => void }
 
@@ -33,7 +33,7 @@ function CreateAgreement({ account, onCreated, onCancel }: Props) {
 
     setBusy(true); setStatus('Creating, approve in your wallet...')
     try {
-      const res = await createAgreement(account, {
+      await createAgreement(account, {
         label: label.trim() || (repoOwner.trim() + '/' + repoName.trim()),
         repoOwner: repoOwner.trim(),
         repoName: repoName.trim(),
@@ -50,9 +50,10 @@ function CreateAgreement({ account, onCreated, onCancel }: Props) {
         challengeWindowSeconds: Math.round(parseFloat(challengeHours || '24') * 3600),
         reserveRule: 'return_to_reserve',
       })
-      const aid = String(res?.receipt?.returnValue ?? res?.returnValue ?? '')
+      let newAid = ''
+      try { newAid = String(await getAgreementCount()) } catch { newAid = '' }
       setStatus('Created.')
-      onCreated(aid)
+      onCreated(newAid)
     } catch (e: any) {
       setStatus('Failed: ' + (e?.message || String(e)).slice(0, 180))
     } finally { setBusy(false) }

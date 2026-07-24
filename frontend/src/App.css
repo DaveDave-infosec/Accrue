@@ -363,3 +363,25 @@
   margin-bottom: 18px;
 }
 .ap-agpick-chips { display: flex; flex-wrap: wrap; gap: 7px; flex: 1; }
+
+/* agreement selector (scales past a chip row) */
+.ap-select {
+  flex: 1;
+  min-width: 220px;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--ground);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  padding: 9px 12px;
+  cursor: pointer;
+}
+.ap-select:focus-visible { outline: 2px solid var(--accrued); outline-offset: 1px; }
+
+/* dim controls while a transaction is in flight */
+.ap-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.ap-chip:disabled { opacity: 0.5; cursor: not-allowed; }
+.ap-select:disabled { opacity: 0.55; cursor: not-allowed; }
+.ap-input:disabled { opacity: 0.6; cursor: not-allowed; }
+.ap-ghost:disabled { opacity: 0.5; cursor: not-allowed; }
