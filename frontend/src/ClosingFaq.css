@@ -1,0 +1,105 @@
+.fq {
+  border-top: 1px solid var(--rule);
+  background: color-mix(in srgb, var(--ground) 92%, white);
+}
+.fq-inner {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 84px 32px 88px;
+}
+.fq-eyebrow {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--tone-walnut);
+  margin: 0 0 16px;
+}
+.fq-head {
+  font-family: var(--display);
+  font-weight: 500;
+  font-size: clamp(26px, 3.2vw, 38px);
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  margin: 0 0 40px;
+}
+.fq-list { margin: 0; }
+.fq-item {
+  padding: 24px 0;
+  border-top: 1px solid var(--rule);
+}
+.fq-item:last-child { border-bottom: 1px solid var(--rule); }
+.fq-q {
+  font-family: var(--display);
+  font-weight: 500;
+  font-size: 20px;
+  letter-spacing: -0.01em;
+  margin: 0 0 8px;
+}
+.fq-a {
+  font-family: var(--body);
+  font-size: 16px;
+  line-height: 1.55;
+  color: color-mix(in srgb, var(--ink) 74%, var(--ground));
+  margin: 0;
+  max-width: 42em;
+}
+
+.cta {
+  border-top: 1px solid var(--rule);
+  background: var(--ink);
+  color: var(--ground);
+}
+.cta-inner {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 96px 32px 100px;
+  text-align: center;
+}
+.cta-head {
+  font-family: var(--display);
+  font-weight: 500;
+  font-size: clamp(38px, 6vw, 68px);
+  line-height: 0.98;
+  letter-spacing: -0.025em;
+  margin: 0 0 22px;
+}
+.cta-head em { font-style: italic; color: var(--accrued); }
+.cta-sub {
+  font-family: var(--body);
+  font-size: 18px;
+  line-height: 1.55;
+  color: color-mix(in srgb, var(--ground) 78%, var(--ink));
+  max-width: 34em;
+  margin: 0 auto 36px;
+}
+.cta-btn {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 15px;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  background: var(--ground);
+  padding: 15px 26px;
+  border-radius: 2px;
+  text-decoration: none;
+  transition: transform 160ms ease, background 160ms ease;
+}
+.cta-btn:hover { background: var(--accrued); color: var(--ground); transform: translateY(-1px); }
+.cta-foot {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: color-mix(in srgb, var(--ground) 55%, var(--ink));
+  margin: 48px 0 0;
+}
+
+.cta a.cta-btn:focus-visible {
+  outline: 2px solid var(--accrued);
+  outline-offset: 3px;
+}
+
+@media (max-width: 860px) {
+  .fq-inner { padding: 56px 22px 60px; }
+  .cta-inner { padding: 64px 22px 68px; }
+}

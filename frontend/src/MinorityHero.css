@@ -1,0 +1,96 @@
+.mn {
+  border-top: 1px solid var(--rule);
+  background: color-mix(in srgb, var(--tone-plum) 7%, var(--ground));
+}
+.mn-inner {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 88px 32px 96px;
+}
+.mn-eyebrow {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--tone-plum);
+  margin: 0 0 18px;
+}
+.mn-head {
+  font-family: var(--display);
+  font-weight: 500;
+  font-size: clamp(28px, 4vw, 46px);
+  line-height: 1.06;
+  letter-spacing: -0.02em;
+  margin: 0 0 22px;
+}
+.mn-lede {
+  font-family: var(--body);
+  font-size: 18px;
+  line-height: 1.55;
+  color: color-mix(in srgb, var(--ink) 80%, var(--ground));
+  max-width: 34em;
+  margin: 0 0 44px;
+}
+
+.mn-card {
+  display: grid;
+  grid-template-columns: 0.9fr 1px 1.1fr;
+  background: color-mix(in srgb, var(--ground) 74%, white);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  box-shadow: 0 24px 48px -34px rgba(34, 32, 27, 0.42);
+  overflow: hidden;
+}
+.mn-side { padding: 28px 30px; }
+.mn-side-label {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--ink) 55%, var(--ground));
+  margin-bottom: 20px;
+}
+.mn-side-foot {
+  display: block;
+  font-family: var(--body);
+  font-style: italic;
+  font-size: 13.5px;
+  color: color-mix(in srgb, var(--ink) 52%, var(--ground));
+  margin-top: 20px;
+}
+
+.mn-rule { background: var(--rule); }
+
+.mn-verdict-rows { list-style: none; margin: 0; padding: 0; }
+.mn-verdict-rows li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 11px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--rule) 60%, transparent);
+}
+.mn-verdict-rows li:last-child { border-bottom: 0; }
+.mn-vh { font-family: var(--mono); font-size: 13.5px; color: var(--ink); }
+.mn-va {
+  font-family: var(--mono);
+  font-size: 16px;
+  color: var(--accrued);
+}
+
+.mn-quote {
+  margin: 0;
+  font-family: var(--body);
+  font-style: italic;
+  font-size: 19px;
+  line-height: 1.5;
+  color: var(--ink);
+  border-left: 2px solid var(--tone-plum);
+  padding-left: 20px;
+}
+
+@media (max-width: 780px) {
+  .mn-inner { padding: 56px 22px 64px; }
+  .mn-card { grid-template-columns: 1fr; }
+  .mn-rule { height: 1px; width: auto; }
+}
