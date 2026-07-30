@@ -46,6 +46,25 @@ Concretely:
   claims their own share. Identity is derived from the transaction sender, never
   from a parameter.
 
+**No caller-supplied verdicts.** This is worth stating plainly, because it is the
+most common way a settlement contract goes wrong. Accrue's settlement functions
+accept no verdict, no amount, no evidence source, and no identity from the caller.
+
+- `settle_epoch(agreement_id, epoch_id)` builds the evidence URL from the
+  agreement's own locked `repo_owner` and `repo_name`, and reads the rubric, pool,
+  and cap from locked storage. The repository is never a parameter, so a caller
+  cannot point settlement at a different repo.
+- Attribution flows only through gist-verified identities, and each of those is
+  bound to the transaction sender at verification time.
+- The allocation is produced by validator consensus, not supplied by the caller.
+- `finalize_epoch(agreement_id, epoch_id)` reads the outcome, contributors, and
+  every allocation **directly from the assessor** via `gl.get_contract_at`. It
+  accepts no outcome or amount, so a relayer cannot fake the number.
+
+The caller chooses only *which* agreement and *which* epoch to act on. Everything
+that decides who is paid, and how much, is read from locked state or from
+consensus, never from the transaction that triggers it.
+
 ---
 
 ## Why this needs GenLayer
