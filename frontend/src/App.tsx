@@ -35,6 +35,7 @@ function App() {
   const [creating, setCreating] = useState(false)
 
   const [agreements, setAgreements] = useState<AgSummary[]>([])
+  const [agsLoaded, setAgsLoaded] = useState(false)
   const [aid, setAid] = useState('')
 
   const [repo, setRepo] = useState('')
@@ -135,6 +136,7 @@ function App() {
   const refreshAll = useCallback(async (wantAid?: string, wantEpoch?: string) => {
     const list = await loadAgreements()
     setAgreements(list)
+    setAgsLoaded(true)
     if (list.length === 0) { setAid(''); setContribs([]); setEpochs([]); return }
     const pickAid = (wantAid && list.some((a) => a.id === wantAid)) ? wantAid
       : (aid && list.some((a) => a.id === aid)) ? aid : list[list.length - 1].id
@@ -162,17 +164,18 @@ function App() {
   }
   async function switchAccount() {
     try {
-      setErr('')
+      setErr(''); setAction('')
       const a = await requestAccountSwitch()
       if (a) { setAccount(a); await refreshAll() }
     } catch (e: any) { setErr(e?.message || String(e)) }
   }
   function disconnect() {
     setAccount(null); setContribs([]); setEpochs([]); setAgreements([])
-    setAid(''); setAction(''); setErr('')
+    setAgsLoaded(false); setAid(''); setAction(''); setErr('')
   }
 
   async function selectAgreement(id: string) {
+    setErr(''); setAction('')
     setAid(id); setSelectedEpoch('')
     let eps: string[] = []
     try { eps = (await getEpochs(id)) as string[] } catch { eps = [] }
@@ -181,7 +184,7 @@ function App() {
     setSelectedEpoch(pick)
     await loadLedger(id, pick)
   }
-  function selectEpoch(id: string) { setSelectedEpoch(id); loadLedger(aid, id) }
+  function selectEpoch(id: string) { setErr(''); setAction(''); setSelectedEpoch(id); loadLedger(aid, id) }
   function loadTypedEpoch() {
     const id = epochInput.trim()
     if (id) { setSelectedEpoch(id); loadLedger(aid, id) }
@@ -251,7 +254,15 @@ function App() {
         </main>
       )}
 
-      {account && !creating && agreements.length === 0 && (
+      {account && !creating && !agsLoaded && agreements.length === 0 && (
+        <main className="ap-main">
+          <div className="ap-empty">
+            <p className="ap-empty-p">Reading agreements from the chain...</p>
+          </div>
+        </main>
+      )}
+
+      {account && !creating && agsLoaded && agreements.length === 0 && (
         <main className="ap-main">
           <div className="ap-empty">
             <h1 className="ap-empty-h">No agreements yet.</h1>
@@ -267,7 +278,7 @@ function App() {
         </main>
       )}
 
-      {account && !creating && agreements.length > 0 && (
+      {account && !creating && agsLoaded && agreements.length > 0 && (
         <main className="ap-main">
           <section className="ap-agpick">
             <span className="ap-k">Agreement</span>
