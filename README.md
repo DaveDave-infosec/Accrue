@@ -65,6 +65,23 @@ The caller chooses only *which* agreement and *which* epoch to act on. Everythin
 that decides who is paid, and how much, is read from locked state or from
 consensus, never from the transaction that triggers it.
 
+**Records are write-once.** A verdict is only trustworthy if what it was made
+against cannot change afterward, so nothing consensus has blessed can be
+overwritten.
+
+- **Agreement terms are set once, at creation.** The repository, rubric,
+  contributors, pool, and cap are written only inside `create_agreement` and have
+  no setter anywhere else. They cannot be edited after work is judged.
+- **A new agreement cannot clobber an old one.** Each is stored under a fresh
+  auto-incremented id. The caller never supplies an id, so no existing agreement
+  can be targeted and overwritten.
+- **Settled epochs are final.** `settle_epoch` asserts the epoch is not already
+  settled before writing anything, so an allocation cannot be re-run or replaced.
+- **Finalization happens once.** `finalize_epoch` asserts the epoch is not already
+  finalized, so no share is ever double-credited.
+- **Paid work stays paid.** A pull request counted in one epoch is permanently
+  marked and cannot re-enter a later settlement.
+
 ---
 
 ## Why this needs GenLayer
