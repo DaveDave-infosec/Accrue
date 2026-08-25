@@ -23,6 +23,9 @@ export async function getEpoch(agreementId: string, epochId: string): Promise<an
 export async function getEpochAllocation(agreementId: string, epochId: string, wallet: string): Promise<any> {
   return readContract({ address: A, functionName: "get_epoch_allocation", args: [agreementId, epochId, wallet] });
 }
+export async function getSettlementProgress(agreementId: string, epochId: string): Promise<any> {
+  return readContract({ address: A, functionName: "get_settlement_progress", args: [agreementId, epochId] });
+}
 
 // ---------- assessor: identity (global) ----------
 export async function isVerified(wallet: string): Promise<boolean> {
@@ -80,8 +83,14 @@ export async function createAgreement(account: string, p: {
     ],
   });
 }
-export async function settleEpoch(account: string, agreementId: string, epochId: string): Promise<any> {
-  return writeContract({ account, address: A, functionName: "settle_epoch", args: [agreementId, epochId] });
+export async function openSettlement(account: string, agreementId: string, epochId: string, windowStart: string, windowEnd: string): Promise<any> {
+  return writeContract({ account, address: A, functionName: "open_settlement", args: [agreementId, epochId, windowStart, windowEnd] });
+}
+export async function collectBatch(account: string, agreementId: string, epochId: string): Promise<any> {
+  return writeContract({ account, address: A, functionName: "collect_batch", args: [agreementId, epochId] });
+}
+export async function finalizeSettlement(account: string, agreementId: string, epochId: string): Promise<any> {
+  return writeContract({ account, address: A, functionName: "finalize_settlement", args: [agreementId, epochId] });
 }
 
 // ---------- writes: vault ----------

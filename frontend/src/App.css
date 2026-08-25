@@ -1,5 +1,4 @@
 .ap { min-height: 100%; background: var(--ground); color: var(--ink); }
-
 .ap-head {
   max-width: 1080px;
   margin: 0 auto;
@@ -385,3 +384,14 @@
 .ap-select:disabled { opacity: 0.55; cursor: not-allowed; }
 .ap-input:disabled { opacity: 0.6; cursor: not-allowed; }
 .ap-ghost:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* V2 settlement: three-phase open/collect/finalize column */
+.ap-action-col { flex-direction: column; align-items: stretch; gap: 8px; }
+.ap-action-col .ap-input { width: 100%; }
+.ap-progress {
+  font-size: 11px;
+  color: var(--muted, #6b7280);
+  line-height: 1.5;
+  word-break: break-word;
+  margin-top: 2px;
+}

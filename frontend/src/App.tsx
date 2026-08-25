@@ -6,26 +6,30 @@ import {
 } from './lib/genlayer'
 import {
   getAgreementCount, getAgreement, getContributors, getEpochs, getEpoch,
-  getEpochAllocation, getHandle, isVerified, getClaimable, getClaimed,
+  getEpochAllocation, getSettlementProgress, getHandle, isVerified, getClaimable, getClaimed,
   getAgreementPool,
-  settleEpoch, finalizeEpoch, claim as claimShare, fundPool,
+  openSettlement, collectBatch, finalizeSettlement, finalizeEpoch, claim as claimShare, fundPool,
 } from './lib/accrue'
 import { ASSESSOR_CONTRACT_ADDRESS, VAULT_CONTRACT_ADDRESS } from './lib/constants'
 import IdentityPanel from './IdentityPanel'
 import CreateAgreement from './CreateAgreement'
 
+
 const EXPLORER = 'https://explorer-studio.genlayer.com/address/'
 const tones = ['is-sage', 'is-walnut', 'is-slate']
+
 
 function shortAddr(a: string) { return a.slice(0, 6) + '...' + a.slice(-4) }
 function fmtGen(n: number) { return n.toFixed(3) }
 function genFromWei(w: bigint) { return Number(w) / 1e18 }
+
 
 type AgSummary = { id: string; label: string; repo: string }
 type Contributor = {
   wallet: string; handle: string; verified: boolean
   allocUnits: number; claimableWei: bigint; claimedWei: bigint
 }
+
 
 function App() {
   const [account, setAccount] = useState<string | null>(null)
@@ -34,15 +38,18 @@ function App() {
   const [err, setErr] = useState('')
   const [creating, setCreating] = useState(false)
 
+
   const [agreements, setAgreements] = useState<AgSummary[]>([])
   const [agsLoaded, setAgsLoaded] = useState(false)
   const [aid, setAid] = useState('')
+
 
   const [repo, setRepo] = useState('')
   const [poolUnits, setPoolUnits] = useState(0)
   const [epochLen, setEpochLen] = useState('')
   const [rubric, setRubric] = useState<[string, number][]>([])
   const [agPoolWei, setAgPoolWei] = useState<bigint>(0n)
+
 
   const [epochs, setEpochs] = useState<string[]>([])
   const [selectedEpoch, setSelectedEpoch] = useState('')
@@ -52,11 +59,16 @@ function App() {
   const [prCount, setPrCount] = useState('')
   const [contribs, setContribs] = useState<Contributor[]>([])
 
+
   const [settleId, setSettleId] = useState('epoch-1')
+  const [winStart, setWinStart] = useState('2020-01-01T00:00:00Z')
+  const [winEnd, setWinEnd] = useState('2030-01-01T00:00:00Z')
+  const [progress, setProgress] = useState<any>(null)
   const [finalId, setFinalId] = useState('epoch-1')
   const [fundAmt, setFundAmt] = useState('1')
   const [epochInput, setEpochInput] = useState('')
   const [action, setAction] = useState('')
+
 
   const loadAgreements = useCallback(async (): Promise<AgSummary[]> => {
     try {
@@ -77,6 +89,7 @@ function App() {
     } catch { return [] }
   }, [])
 
+
   const loadLedger = useCallback(async (agId: string, epochId: string) => {
     setLoading(true); setErr('')
     try {
@@ -92,8 +105,9 @@ function App() {
         setRubric(Object.entries(rj).map(([k, v]) => [k, Number(v)]) as [string, number][])
       } catch { setRubric([]) }
 
+
       if (!epochId) {
-        setOutcome(''); setReserveUnits(0); setMinority(''); setPrCount('')
+        setOutcome(''); setReserveUnits(0); setMinority(''); setPrCount(''); setProgress(null)
         const blank = await Promise.all((cs as string[]).filter(Boolean).map(async (w) => {
           const [handle, verified, claimable, claimed] = await Promise.all([
             getHandle(w), isVerified(w), getClaimable(agId, w), getClaimed(agId, w),
@@ -107,11 +121,14 @@ function App() {
         return
       }
 
+
       const ep = await getEpoch(agId, epochId)
       setOutcome(ep.outcome)
       setReserveUnits(Number(ep.reserve))
       setMinority(ep.minority_note)
       setPrCount(ep.pr_count)
+      try { setProgress(await getSettlementProgress(agId, epochId)) } catch { setProgress(null) }
+
 
       const rows: Contributor[] = await Promise.all(
         (cs as string[]).filter(Boolean).map(async (w) => {
@@ -133,6 +150,7 @@ function App() {
     }
   }, [])
 
+
   const refreshAll = useCallback(async (wantAid?: string, wantEpoch?: string) => {
     const list = await loadAgreements()
     setAgreements(list)
@@ -151,12 +169,14 @@ function App() {
     await loadLedger(pickAid, pickEpoch)
   }, [loadAgreements, loadLedger, aid, selectedEpoch])
 
+
   useEffect(() => {
     getCurrentAccount().then((a) => { if (a) { setAccount(a); refreshAll() } })
     const unsub = onAccountChange((a) => { setAccount(a); if (a) refreshAll() })
     return unsub
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
 
   async function connect() {
     try { setErr(''); const a = await connectWallet(); setAccount(a); await refreshAll() }
@@ -174,6 +194,7 @@ function App() {
     setAgsLoaded(false); setAid(''); setAction(''); setErr('')
   }
 
+
   async function selectAgreement(id: string) {
     setErr(''); setAction('')
     setAid(id); setSelectedEpoch('')
@@ -189,6 +210,7 @@ function App() {
     const id = epochInput.trim()
     if (id) { setSelectedEpoch(id); loadLedger(aid, id) }
   }
+
 
   async function run(label: string, fn: () => Promise<any>, wantEpoch?: string) {
     if (!account) { setErr('Connect a wallet first.'); return }
@@ -210,9 +232,11 @@ function App() {
     }
   }
 
+
   const connectedRow = contribs.find((c) => c.wallet.toLowerCase() === (account || '').toLowerCase())
   const myClaimable = connectedRow ? genFromWei(connectedRow.claimableWei) : 0
   const disabled = busy || loading
+
 
   return (
     <div className="ap">
@@ -231,7 +255,9 @@ function App() {
         </div>
       </header>
 
+
       {err && <div className="ap-err">{err}</div>}
+
 
       {!account && (
         <div className="ap-empty">
@@ -244,6 +270,7 @@ function App() {
         </div>
       )}
 
+
       {account && creating && (
         <main className="ap-main">
           <CreateAgreement
@@ -254,6 +281,7 @@ function App() {
         </main>
       )}
 
+
       {account && !creating && !agsLoaded && agreements.length === 0 && (
         <main className="ap-main">
           <div className="ap-empty">
@@ -261,6 +289,7 @@ function App() {
           </div>
         </main>
       )}
+
 
       {account && !creating && agsLoaded && agreements.length === 0 && (
         <main className="ap-main">
@@ -277,6 +306,7 @@ function App() {
           </div>
         </main>
       )}
+
 
       {account && !creating && agsLoaded && agreements.length > 0 && (
         <main className="ap-main">
@@ -295,6 +325,7 @@ function App() {
             <button className="ap-btn ap-btn-sm" onClick={() => setCreating(true)} disabled={busy}>New agreement</button>
           </section>
 
+
           <section className="ap-agree">
             <div className="ap-agree-item"><span className="ap-k">Repository</span><span className="ap-v">{repo || '—'}</span></div>
             <div className="ap-agree-item"><span className="ap-k">Pool / epoch</span><span className="ap-v">{fmtGen(poolUnits / 1000)} GEN</span></div>
@@ -306,6 +337,7 @@ function App() {
               </span>
             </div>
           </section>
+
 
           <div className="ap-epochs">
             <span className="ap-epochs-label">Epochs</span>
@@ -333,6 +365,7 @@ function App() {
             </div>
           </div>
 
+
           <div className="ap-grid">
             <section className="ap-ledger">
               <div className="ap-ledger-head">
@@ -342,6 +375,7 @@ function App() {
                   {prCount ? ' · ' + prCount + ' PRs' : ''}
                 </span>
               </div>
+
 
               <ul className="ap-rows">
                 {contribs.map((c, i) => {
@@ -377,26 +411,39 @@ function App() {
                 </li>
               </ul>
 
+
               <div className="ap-ledger-foot">this agreement holds <b>{fmtGen(genFromWei(agPoolWei))} GEN</b></div>
             </section>
 
+
             <aside className="ap-side">
               <IdentityPanel account={account} onVerified={() => { refreshAll(aid) }} />
+
 
               <div className="ap-minority">
                 <span className="ap-side-label">Minority note · on-chain</span>
                 <blockquote className="ap-quote">{minority || 'No dissent recorded for this epoch.'}</blockquote>
               </div>
 
+
               <div className="ap-actions">
                 <span className="ap-side-label">Actions · permissionless</span>
-                <div className="ap-action">
+                <div className="ap-action ap-action-col">
                   <input className="ap-input" value={settleId} onChange={(e) => setSettleId(e.target.value)} placeholder="epoch id" disabled={disabled} />
-                  <button className="ap-btn" onClick={() => run('Settle ' + settleId, () => settleEpoch(account!, aid, settleId), settleId)} disabled={disabled}>Settle epoch</button>
+                  <input className="ap-input" value={winStart} onChange={(e) => setWinStart(e.target.value)} placeholder="window start · ISO8601 UTC" disabled={disabled} />
+                  <input className="ap-input" value={winEnd} onChange={(e) => setWinEnd(e.target.value)} placeholder="window end · ISO8601 UTC" disabled={disabled} />
+                  <button className="ap-btn" onClick={() => run('Open ' + settleId, () => openSettlement(account!, aid, settleId, winStart, winEnd), settleId)} disabled={disabled}>Open settlement</button>
+                  <button className="ap-btn" onClick={() => run('Collect ' + settleId, () => collectBatch(account!, aid, settleId), settleId)} disabled={disabled}>
+                    {progress && progress.opened ? `Collect batch · ${progress.collected}/${progress.to_collect}` : 'Collect batch'}
+                  </button>
+                  <button className="ap-btn" onClick={() => run('Finalize settlement ' + settleId, () => finalizeSettlement(account!, aid, settleId), settleId)} disabled={disabled}>Finalize settlement</button>
+                  {progress && progress.opened && (
+                    <span className="ap-progress">window {progress.window_start} to {progress.window_end} · collected {progress.collected}/{progress.to_collect}{progress.settled ? ' · settled' : ''}</span>
+                  )}
                 </div>
                 <div className="ap-action">
                   <input className="ap-input" value={finalId} onChange={(e) => setFinalId(e.target.value)} placeholder="epoch id" disabled={disabled} />
-                  <button className="ap-btn" onClick={() => run('Finalize ' + finalId, () => finalizeEpoch(account!, aid, finalId), finalId)} disabled={disabled}>Finalize epoch</button>
+                  <button className="ap-btn" onClick={() => run('Finalize ' + finalId, () => finalizeEpoch(account!, aid, finalId), finalId)} disabled={disabled}>Release funds (vault)</button>
                 </div>
                 <div className="ap-action">
                   <input className="ap-input" value={fundAmt} onChange={(e) => setFundAmt(e.target.value)} placeholder="GEN" disabled={disabled} />
@@ -411,6 +458,7 @@ function App() {
             </aside>
           </div>
 
+
           <footer className="ap-foot">
             <a href={EXPLORER + ASSESSOR_CONTRACT_ADDRESS} target="_blank" rel="noopener noreferrer">assessor {shortAddr(ASSESSOR_CONTRACT_ADDRESS)} ↗</a>
             <a href={EXPLORER + VAULT_CONTRACT_ADDRESS} target="_blank" rel="noopener noreferrer">vault {shortAddr(VAULT_CONTRACT_ADDRESS)} ↗</a>
@@ -420,5 +468,6 @@ function App() {
     </div>
   )
 }
+
 
 export default App
