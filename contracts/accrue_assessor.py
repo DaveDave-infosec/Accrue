@@ -1,14 +1,16 @@
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
-
 from genlayer import *
 import json
+
+BATCH = 3
 
 
 class AccrueAssessor(gl.Contract):
     # MULTI-TENANT. Anyone can create an agreement for their own public repo.
-    # Identity verification is global: a wallet-to-GitHub link is a property of
-    # the person, not of one agreement. Settlement is permissionless per
-    # agreement. Nobody, including a creator, can set or edit an allocation.
+    # Identity verification is global. Settlement is permissionless per
+    # agreement, now in three phases so deep evidence can be fetched in small
+    # batches that stay under GitHub's burst ceiling. Nobody, including a
+    # creator, can set or edit an allocation.
 
     # ---- global identity ----
     nonce_counter: u256
@@ -40,7 +42,7 @@ class AccrueAssessor(gl.Contract):
     ag_epoch_count: TreeMap[str, u256]         # aid -> count
     ag_epoch_at: TreeMap[str, str]             # "aid:index" -> epoch_id
 
-    # ---- settlement records ----
+    # ---- settlement records (final) ----
     epoch_settled: TreeMap[str, bool]          # "aid:epoch"
     epoch_outcome: TreeMap[str, str]
     epoch_reasoning: TreeMap[str, str]
@@ -49,6 +51,21 @@ class AccrueAssessor(gl.Contract):
     epoch_pr_count: TreeMap[str, u256]
     alloc_amount: TreeMap[str, u256]           # "aid:epoch:wallet"
     counted_pr: TreeMap[str, bool]             # "aid:prnumber"
+
+    # ---- batched-settlement working state ----
+    epoch_opened: TreeMap[str, bool]           # "aid:epoch"
+    epoch_win_start: TreeMap[str, str]         # "aid:epoch"  frozen window start (ISO8601 UTC)
+    epoch_win_end: TreeMap[str, str]           # "aid:epoch"  frozen window end   (ISO8601 UTC)
+    epoch_to_collect: TreeMap[str, u256]       # "aid:epoch"  number of frozen PRs
+    epoch_collected: TreeMap[str, u256]        # "aid:epoch"  progress index
+    epoch_prnum_at: TreeMap[str, str]          # "aid:epoch:index" -> pr number (str)
+    epoch_pr_base: TreeMap[str, str]           # "aid:epoch:num"   -> base record JSON (from list)
+    epoch_pr_deep: TreeMap[str, str]           # "aid:epoch:num"   -> deep evidence JSON (from collect)
+    epoch_pr_done: TreeMap[str, bool]          # "aid:epoch:num"   -> collected flag
+
+    # ---- challenge-window stamps (set at finalize) ----
+    epoch_finalized_at: TreeMap[str, str]      # "aid:epoch" -> ISO8601 UTC datetime of finalize
+    epoch_challenge_secs: TreeMap[str, u256]   # "aid:epoch" -> challenge window snapshot (seconds)
 
     def __init__(self):
         self.nonce_counter = u256(0)
@@ -100,8 +117,6 @@ class AccrueAssessor(gl.Contract):
         return "VERIFIED"
 
     # ---------- create an agreement (PERMISSIONLESS) ----------
-    # Creating moves no funds, so anyone may register terms for their own repo.
-    # The creator gains no authority over allocations.
     @gl.public.write
     def create_agreement(
         self,
@@ -161,23 +176,36 @@ class AccrueAssessor(gl.Contract):
         self.ag_epoch_at[aid + ":" + str(n)] = epoch_id
         self.ag_epoch_count[aid] = u256(n + 1)
 
-    # ---------- permissionless epoch settlement ----------
+    # =====================================================================
+    # PHASE 1: open_settlement
+    # Fetches the PR list once, freezes the epoch window and the exact set of
+    # in-window, not-yet-counted merged PRs. Reverts (no partial state) if the
+    # list cannot be fetched or the window holds more than 50 PRs.
+    # =====================================================================
     @gl.public.write
-    def settle_epoch(self, agreement_id: str, epoch_id: str) -> str:
+    def open_settlement(
+        self,
+        agreement_id: str,
+        epoch_id: str,
+        window_start: str,
+        window_end: str,
+    ) -> str:
         aid = agreement_id
         assert self.ag_exists.get(aid, False), "agreement does not exist"
         ekey = aid + ":" + epoch_id
         assert not self.epoch_settled.get(ekey, False), "epoch already settled"
+        assert not self.epoch_opened.get(ekey, False), "epoch already opened"
+        ws = window_start.strip()
+        we = window_end.strip()
+        assert ws != "" and we != "", "window start and end required (ISO8601 UTC)"
+        assert ws < we, "window start must be before window end"
 
         api_url = (
             "https://api.github.com/repos/" + self.ag_repo_owner[aid] + "/" +
-            self.ag_repo_name[aid] + "/pulls?state=closed&sort=created&direction=asc&per_page=50"
+            self.ag_repo_name[aid] + "/pulls?state=closed&sort=created&direction=asc&per_page=100"
         )
-        pool_local = int(self.ag_pool[aid])
-        max_per = int(self.ag_max_per[aid])
-        rubric_local = self.ag_rubric[aid]
 
-        def build_pkg() -> str:
+        def build_list() -> str:
             try:
                 raw = gl.nondet.web.render(api_url, mode="text")
             except Exception:
@@ -204,40 +232,289 @@ class AccrueAssessor(gl.Contract):
                     "title": str(pr.get("title", "")),
                 })
             merged.sort(key=lambda x: (x["merged_at"], x["number"]))
-            if len(merged) > 50:
-                return "EVIDENCE_TOO_LARGE"
             return json.dumps({"pulls": merged}, sort_keys=True)
 
-        pkg = gl.eq_principle.strict_eq(build_pkg)
-
-        if pkg == "EVIDENCE_UNAVAILABLE" or pkg == "EVIDENCE_TOO_LARGE":
-            self.epoch_settled[ekey] = True
-            self._register_epoch(aid, epoch_id)
-            self.epoch_outcome[ekey] = "Hold"
-            self.epoch_reasoning[ekey] = "Evidence could not be assembled (" + pkg + ")."
-            self.epoch_minority[ekey] = ""
-            self.epoch_reserve[ekey] = u256(pool_local)
-            self.epoch_pr_count[ekey] = u256(0)
-            return "Hold"
+        pkg = gl.eq_principle.strict_eq(build_list)
+        assert pkg != "EVIDENCE_UNAVAILABLE", "PR list unavailable right now, retry in a moment"
 
         parsed = json.loads(pkg)
         all_pulls = parsed.get("pulls", [])
-        epoch_pulls = []
-        new_numbers = []
+
+        frozen = []
         for pr in all_pulls:
+            m = str(pr.get("merged_at", ""))
+            if m < ws or m >= we:
+                continue
             num = int(pr.get("number", 0))
             if self.counted_pr.get(aid + ":" + str(num), False):
                 continue
+            frozen.append(pr)
+
+        assert len(frozen) <= 50, "more than 50 PRs in this window, narrow the window and reopen"
+
+        self.epoch_opened[ekey] = True
+        self.epoch_win_start[ekey] = ws
+        self.epoch_win_end[ekey] = we
+        self.epoch_collected[ekey] = u256(0)
+        self.epoch_to_collect[ekey] = u256(len(frozen))
+
+        for i in range(len(frozen)):
+            pr = frozen[i]
+            num = int(pr.get("number", 0))
+            self.epoch_prnum_at[ekey + ":" + str(i)] = str(num)
+            self.epoch_pr_base[ekey + ":" + str(num)] = json.dumps({
+                "number": num,
+                "author": str(pr.get("author", "")),
+                "merged_at": str(pr.get("merged_at", "")),
+                "title": str(pr.get("title", "")),
+            }, sort_keys=True)
+
+        return "OPENED to_collect=" + str(len(frozen))
+
+    # =====================================================================
+    # PHASE 2: collect_batch
+    # Fetches deep evidence for up to BATCH not-yet-collected PRs (3 GitHub
+    # calls each) and stores it. Permissionless and idempotent. On a fetch
+    # failure it stops WITHOUT marking that PR collected, so finalize stays
+    # blocked until a later retry succeeds.
+    # =====================================================================
+    @gl.public.write
+    def collect_batch(self, agreement_id: str, epoch_id: str) -> str:
+        aid = agreement_id
+        assert self.ag_exists.get(aid, False), "agreement does not exist"
+        ekey = aid + ":" + epoch_id
+        assert self.epoch_opened.get(ekey, False), "epoch not opened"
+        assert not self.epoch_settled.get(ekey, False), "epoch already settled"
+
+        to_collect = int(self.epoch_to_collect.get(ekey, u256(0)))
+        start = int(self.epoch_collected.get(ekey, u256(0)))
+        if start >= to_collect:
+            return "ALL_COLLECTED " + str(to_collect) + "/" + str(to_collect)
+
+        owner = self.ag_repo_owner[aid]
+        name = self.ag_repo_name[aid]
+        end = start + BATCH
+        if end > to_collect:
+            end = to_collect
+
+        idx = start
+        while idx < end:
+            num_str = self.epoch_prnum_at.get(ekey + ":" + str(idx), "")
+            pkey = ekey + ":" + num_str
+            if not self.epoch_pr_done.get(pkey, False):
+                files_url = "https://api.github.com/repos/" + owner + "/" + name + "/pulls/" + num_str + "/files?per_page=100"
+                reviews_url = "https://api.github.com/repos/" + owner + "/" + name + "/pulls/" + num_str + "/reviews?per_page=100"
+                commits_url = "https://api.github.com/repos/" + owner + "/" + name + "/pulls/" + num_str + "/commits?per_page=100"
+
+                def build_deep() -> str:
+                    lock_suffixes = [
+                        "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+                        "poetry.lock", "cargo.lock", "go.sum", "composer.lock",
+                    ]
+                    gen_dirs = ["dist", "build", "vendor", "node_modules"]
+
+                    def is_discounted(p: str) -> bool:
+                        for suf in lock_suffixes:
+                            if p.endswith(suf):
+                                return True
+                        if p.endswith(".min.js") or p.endswith(".min.css"):
+                            return True
+                        segs = p.split("/")
+                        for d in gen_dirs:
+                            if d in segs:
+                                return True
+                        return False
+
+                    # files
+                    try:
+                        fraw = gl.nondet.web.render(files_url, mode="text")
+                    except Exception:
+                        return "FETCH_FAILED"
+                    if fraw is None:
+                        return "FETCH_FAILED"
+                    ftext = str(fraw)
+                    if not ftext.lstrip().startswith("["):
+                        return "FETCH_FAILED"
+                    try:
+                        fdata = json.loads(ftext)
+                    except Exception:
+                        return "FETCH_FAILED"
+                    files = []
+                    for f in fdata:
+                        if not isinstance(f, dict):
+                            continue
+                        files.append({
+                            "path": str(f.get("filename", "")),
+                            "status": str(f.get("status", "")),
+                            "additions": int(f.get("additions", 0)),
+                            "deletions": int(f.get("deletions", 0)),
+                        })
+                    files.sort(key=lambda x: x["path"])
+                    if len(files) > 100:
+                        files = files[:100]
+                    footprint = 0
+                    breadth = 0
+                    for f in files:
+                        churn = f["additions"] + f["deletions"]
+                        if churn > 400:
+                            churn = 400
+                        if is_discounted(f["path"].lower()):
+                            footprint += churn // 10
+                        else:
+                            footprint += churn
+                            breadth += 1
+                    if breadth > 40:
+                        breadth = 40
+                    changed_files = len(files)
+
+                    # reviews
+                    try:
+                        rraw = gl.nondet.web.render(reviews_url, mode="text")
+                    except Exception:
+                        return "FETCH_FAILED"
+                    if rraw is None:
+                        return "FETCH_FAILED"
+                    rtext = str(rraw)
+                    if not rtext.lstrip().startswith("["):
+                        return "FETCH_FAILED"
+                    try:
+                        rdata = json.loads(rtext)
+                    except Exception:
+                        return "FETCH_FAILED"
+                    approvers = []
+                    for rv in rdata:
+                        if not isinstance(rv, dict):
+                            continue
+                        if str(rv.get("state", "")) != "APPROVED":
+                            continue
+                        u = rv.get("user") or {}
+                        lg = str(u.get("login", "")).lower() if isinstance(u, dict) else ""
+                        if lg != "" and lg not in approvers:
+                            approvers.append(lg)
+                    approvers.sort()
+                    approvals = len(approvers)
+                    if approvals > 3:
+                        approvals = 3
+
+                    # commits
+                    try:
+                        craw = gl.nondet.web.render(commits_url, mode="text")
+                    except Exception:
+                        return "FETCH_FAILED"
+                    if craw is None:
+                        return "FETCH_FAILED"
+                    ctext = str(craw)
+                    if not ctext.lstrip().startswith("["):
+                        return "FETCH_FAILED"
+                    try:
+                        cdata = json.loads(ctext)
+                    except Exception:
+                        return "FETCH_FAILED"
+                    commits = []
+                    for c in cdata:
+                        if not isinstance(c, dict):
+                            continue
+                        sha = str(c.get("sha", ""))
+                        cm = c.get("commit") or {}
+                        msg = str(cm.get("message", "")) if isinstance(cm, dict) else ""
+                        first = msg.split("\n")[0]
+                        if len(first) > 200:
+                            first = first[:200]
+                        commits.append({"sha": sha, "msg": first})
+                    commits.sort(key=lambda x: x["sha"])
+                    if len(commits) > 30:
+                        commits = commits[:30]
+                    commit_msgs = []
+                    for c in commits:
+                        commit_msgs.append(c["msg"])
+
+                    rec = {
+                        "footprint": footprint,
+                        "breadth": breadth,
+                        "changed_files": changed_files,
+                        "approvals": approvals,
+                        "files": files,
+                        "commit_messages": commit_msgs,
+                        "commit_count": len(commits),
+                    }
+                    return json.dumps(rec, sort_keys=True)
+
+                deep = gl.eq_principle.strict_eq(build_deep)
+                if deep == "FETCH_FAILED":
+                    self.epoch_collected[ekey] = u256(idx)
+                    return "COLLECT_INCOMPLETE stopped at pr " + num_str + ", retry in a moment"
+                self.epoch_pr_deep[pkey] = deep
+                self.epoch_pr_done[pkey] = True
+            idx += 1
+
+        self.epoch_collected[ekey] = u256(idx)
+        if idx >= to_collect:
+            return "COLLECT_DONE " + str(idx) + "/" + str(to_collect)
+        return "COLLECTED " + str(idx) + "/" + str(to_collect)
+
+    # =====================================================================
+    # PHASE 3: finalize_settlement
+    # Blocks until every frozen PR is collected. Then assembles the enriched
+    # evidence, runs the band-gated consensus allocation, and writes the split,
+    # reserve, minority note, and outcome. Marks each frozen PR counted.
+    # =====================================================================
+    @gl.public.write
+    def finalize_settlement(self, agreement_id: str, epoch_id: str) -> str:
+        aid = agreement_id
+        assert self.ag_exists.get(aid, False), "agreement does not exist"
+        ekey = aid + ":" + epoch_id
+        assert self.epoch_opened.get(ekey, False), "epoch not opened"
+        assert not self.epoch_settled.get(ekey, False), "epoch already settled"
+
+        to_collect = int(self.epoch_to_collect.get(ekey, u256(0)))
+        collected = int(self.epoch_collected.get(ekey, u256(0)))
+        assert collected >= to_collect, "not all PRs collected yet, run collect_batch until done"
+
+        # Stamp the challenge window. Every settled path below inherits this,
+        # so the vault can refuse to release funds until it has elapsed.
+        self.epoch_finalized_at[ekey] = str(gl.message_raw["datetime"])
+        self.epoch_challenge_secs[ekey] = self.ag_challenge.get(aid, u256(0))
+
+        pool_local = int(self.ag_pool[aid])
+        max_per = int(self.ag_max_per[aid])
+        rubric_local = self.ag_rubric[aid]
+
+        new_numbers = []
+        epoch_pulls = []
+        for i in range(to_collect):
+            num_str = self.epoch_prnum_at.get(ekey + ":" + str(i), "")
+            num = int(num_str)
             new_numbers.append(num)
-            login = str(pr.get("author", "")).lower()
+            base_raw = self.epoch_pr_base.get(ekey + ":" + num_str, "")
+            if base_raw == "":
+                continue
+            base = json.loads(base_raw)
+            login = str(base.get("author", "")).lower()
             wallet = self.verified_handle_to_wallet.get(login, "")
             if wallet == "" or not self.ag_is_contributor.get(aid + ":" + wallet, False):
                 continue
+            if self.counted_pr.get(aid + ":" + str(num), False):
+                continue
+            deep_raw = self.epoch_pr_deep.get(ekey + ":" + num_str, "")
+            deep = json.loads(deep_raw) if deep_raw != "" else {}
+            files = deep.get("files", [])
+            if len(files) > 15:
+                files = files[:15]
+            msgs = deep.get("commit_messages", [])
+            if len(msgs) > 8:
+                msgs = msgs[:8]
             epoch_pulls.append({
                 "number": num,
                 "contributor": wallet,
-                "merged_at": str(pr.get("merged_at", "")),
-                "title": str(pr.get("title", "")),
+                "merged_at": str(base.get("merged_at", "")),
+                "title": str(base.get("title", "")),
+                "footprint": int(deep.get("footprint", 0)),
+                "breadth": int(deep.get("breadth", 0)),
+                "changed_files": int(deep.get("changed_files", 0)),
+                "commit_count": int(deep.get("commit_count", 0)),
+                "approvals": int(deep.get("approvals", 0)),
+                "files": files,
+                "commit_messages": msgs,
             })
 
         if len(epoch_pulls) == 0:
@@ -269,9 +546,19 @@ class AccrueAssessor(gl.Contract):
                 "LOCKED RUBRIC (weights as percentages), score each contributor 0-100 PER "
                 "DIMENSION in multiples of 5, grounded strictly in the evidence:\n"
                 + rubric_local + "\n\n"
-                "Each PR below is already attributed to an approved contributor by its "
-                "'contributor' field (their verified wallet). MERGED PR EVIDENCE:\n"
-                + evidence_local + "\n\n"
+                "Each PR is attributed to an approved contributor by its 'contributor' field. "
+                "Beyond title and merge time, each PR carries objective signals computed from "
+                "its diff, reviews, and commits:\n"
+                " - footprint: size-weighted lines changed, capped per file, with lock and "
+                "generated files already discounted. Do not reward padding further.\n"
+                " - breadth: count of meaningful (non-generated) files touched.\n"
+                " - changed_files: total files in the diff.\n"
+                " - commit_count and commit_messages: the work's commit substance.\n"
+                " - approvals: distinct reviewer approvals the PR received.\n"
+                " - files: a sample of changed file paths with per-file additions/deletions.\n"
+                "Weight genuine substance and reviewed, broad, meaningful work. Discount "
+                "trivial churn, generated output, and title-only signal.\n\n"
+                "MERGED PR EVIDENCE:\n" + evidence_local + "\n\n"
                 "Rules:\n"
                 "1. Combine each contributor's per-dimension scores by the rubric weights, then "
                 "split the pool in PROPORTION to weighted scores.\n"
@@ -400,6 +687,20 @@ class AccrueAssessor(gl.Contract):
             "minority_note": self.epoch_minority.get(ekey, ""),
             "reserve": str(self.epoch_reserve.get(ekey, u256(0))),
             "pr_count": str(self.epoch_pr_count.get(ekey, u256(0))),
+            "finalized_at": self.epoch_finalized_at.get(ekey, ""),
+            "challenge_seconds": str(self.epoch_challenge_secs.get(ekey, u256(0))),
+        }
+
+    @gl.public.view
+    def get_settlement_progress(self, agreement_id: str, epoch_id: str) -> dict:
+        ekey = agreement_id + ":" + epoch_id
+        return {
+            "opened": self.epoch_opened.get(ekey, False),
+            "settled": self.epoch_settled.get(ekey, False),
+            "window_start": self.epoch_win_start.get(ekey, ""),
+            "window_end": self.epoch_win_end.get(ekey, ""),
+            "to_collect": str(self.epoch_to_collect.get(ekey, u256(0))),
+            "collected": str(self.epoch_collected.get(ekey, u256(0))),
         }
 
     @gl.public.view

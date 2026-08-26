@@ -1,5 +1,4 @@
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
-
 from genlayer import *
 
 # Each pool "unit" from an assessor allocation = this many wei of native GEN.
@@ -37,6 +36,36 @@ class AccrueVault(gl.Contract):
         self.ag_pool_wei[aid] = u256(int(self.ag_pool_wei.get(aid, u256(0))) + amount)
         self.ag_funded_wei[aid] = u256(int(self.ag_funded_wei.get(aid, u256(0))) + amount)
 
+    # ---- deterministic ISO8601 UTC -> seconds since 1970 (integer math only) ----
+    def _iso_to_epoch(self, s: str) -> int:
+        s = s.strip()
+        if "T" in s:
+            datepart, timepart = s.split("T", 1)
+        else:
+            datepart = s
+            timepart = "00:00:00"
+        timepart = timepart.replace("Z", "")
+        if "." in timepart:
+            timepart = timepart.split(".", 1)[0]
+        dp = datepart.split("-")
+        year = int(dp[0])
+        month = int(dp[1])
+        day = int(dp[2])
+        tp = timepart.split(":")
+        hour = int(tp[0])
+        minute = int(tp[1])
+        second = int(tp[2]) if len(tp) > 2 else 0
+        y = year
+        if month <= 2:
+            y -= 1
+        era = (y if y >= 0 else y - 399) // 400
+        yoe = y - era * 400
+        m_adj = month + (-3 if month > 2 else 9)
+        doy = (153 * m_adj + 2) // 5 + day - 1
+        doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
+        days = era * 146097 + doe - 719468
+        return days * 86400 + hour * 3600 + minute * 60 + second
+
     # ---- PERMISSIONLESS finalize: read the assessor's verdict, record claimables ----
     @gl.public.write
     def finalize_epoch(self, agreement_id: str, epoch_id: str) -> str:
@@ -61,6 +90,18 @@ class AccrueVault(gl.Contract):
                 wei = units * WEI_PER_UNIT
                 pending.append((w, wei))
                 total_wei += wei
+
+        # CHALLENGE WINDOW: funds cannot be consumed until the window the
+        # assessor stamped at finalize has fully elapsed. Only gate when there
+        # is an actual payout; no-payout epochs (ReturnToReserve/Hold) consume
+        # nothing and are not delayed.
+        if total_wei > 0:
+            finalized_at = str(ep["finalized_at"])
+            challenge_secs = int(ep["challenge_seconds"])
+            assert finalized_at != "", "assessor did not stamp a finalize time"
+            now_iso = str(gl.message_raw["datetime"])
+            elapsed = self._iso_to_epoch(now_iso) - self._iso_to_epoch(finalized_at)
+            assert elapsed >= challenge_secs, "challenge window has not elapsed yet, funds cannot be released"
 
         available = int(self.ag_pool_wei.get(aid, u256(0)))
         assert available >= total_wei, "agreement pool underfunded for this settlement"
