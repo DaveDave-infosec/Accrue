@@ -83,8 +83,8 @@ export async function createAgreement(account: string, p: {
     ],
   });
 }
-export async function openSettlement(account: string, agreementId: string, epochId: string, windowStart: string, windowEnd: string): Promise<any> {
-  return writeContract({ account, address: A, functionName: "open_settlement", args: [agreementId, epochId, windowStart, windowEnd] });
+export async function openSettlement(account: string, agreementId: string, epochIndex: string): Promise<any> {
+  return writeContract({ account, address: A, functionName: "open_settlement", args: [agreementId, epochIndex] });
 }
 export async function collectBatch(account: string, agreementId: string, epochId: string): Promise<any> {
   return writeContract({ account, address: A, functionName: "collect_batch", args: [agreementId, epochId] });

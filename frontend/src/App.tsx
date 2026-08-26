@@ -15,8 +15,12 @@ import IdentityPanel from './IdentityPanel'
 import CreateAgreement from './CreateAgreement'
 
 
+
+
 const EXPLORER = 'https://explorer-studio.genlayer.com/address/'
 const tones = ['is-sage', 'is-walnut', 'is-slate']
+
+
 
 
 function shortAddr(a: string) { return a.slice(0, 6) + '...' + a.slice(-4) }
@@ -24,11 +28,15 @@ function fmtGen(n: number) { return n.toFixed(3) }
 function genFromWei(w: bigint) { return Number(w) / 1e18 }
 
 
+
+
 type AgSummary = { id: string; label: string; repo: string }
 type Contributor = {
   wallet: string; handle: string; verified: boolean
   allocUnits: number; claimableWei: bigint; claimedWei: bigint
 }
+
+
 
 
 function App() {
@@ -39,9 +47,13 @@ function App() {
   const [creating, setCreating] = useState(false)
 
 
+
+
   const [agreements, setAgreements] = useState<AgSummary[]>([])
   const [agsLoaded, setAgsLoaded] = useState(false)
   const [aid, setAid] = useState('')
+
+
 
 
   const [repo, setRepo] = useState('')
@@ -49,6 +61,8 @@ function App() {
   const [epochLen, setEpochLen] = useState('')
   const [rubric, setRubric] = useState<[string, number][]>([])
   const [agPoolWei, setAgPoolWei] = useState<bigint>(0n)
+
+
 
 
   const [epochs, setEpochs] = useState<string[]>([])
@@ -60,14 +74,16 @@ function App() {
   const [contribs, setContribs] = useState<Contributor[]>([])
 
 
-  const [settleId, setSettleId] = useState('epoch-1')
-  const [winStart, setWinStart] = useState('2020-01-01T00:00:00Z')
-  const [winEnd, setWinEnd] = useState('2030-01-01T00:00:00Z')
+
+
+  const [settleId, setSettleId] = useState('0')
   const [progress, setProgress] = useState<any>(null)
-  const [finalId, setFinalId] = useState('epoch-1')
+  const [finalId, setFinalId] = useState('0')
   const [fundAmt, setFundAmt] = useState('1')
   const [epochInput, setEpochInput] = useState('')
   const [action, setAction] = useState('')
+
+
 
 
   const loadAgreements = useCallback(async (): Promise<AgSummary[]> => {
@@ -90,6 +106,8 @@ function App() {
   }, [])
 
 
+
+
   const loadLedger = useCallback(async (agId: string, epochId: string) => {
     setLoading(true); setErr('')
     try {
@@ -104,6 +122,8 @@ function App() {
         const rj = JSON.parse(ag.rubric_json)
         setRubric(Object.entries(rj).map(([k, v]) => [k, Number(v)]) as [string, number][])
       } catch { setRubric([]) }
+
+
 
 
       if (!epochId) {
@@ -122,12 +142,16 @@ function App() {
       }
 
 
+
+
       const ep = await getEpoch(agId, epochId)
       setOutcome(ep.outcome)
       setReserveUnits(Number(ep.reserve))
       setMinority(ep.minority_note)
       setPrCount(ep.pr_count)
       try { setProgress(await getSettlementProgress(agId, epochId)) } catch { setProgress(null) }
+
+
 
 
       const rows: Contributor[] = await Promise.all(
@@ -151,6 +175,8 @@ function App() {
   }, [])
 
 
+
+
   const refreshAll = useCallback(async (wantAid?: string, wantEpoch?: string) => {
     const list = await loadAgreements()
     setAgreements(list)
@@ -170,12 +196,16 @@ function App() {
   }, [loadAgreements, loadLedger, aid, selectedEpoch])
 
 
+
+
   useEffect(() => {
     getCurrentAccount().then((a) => { if (a) { setAccount(a); refreshAll() } })
     const unsub = onAccountChange((a) => { setAccount(a); if (a) refreshAll() })
     return unsub
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+
 
 
   async function connect() {
@@ -195,6 +225,8 @@ function App() {
   }
 
 
+
+
   async function selectAgreement(id: string) {
     setErr(''); setAction('')
     setAid(id); setSelectedEpoch('')
@@ -210,6 +242,8 @@ function App() {
     const id = epochInput.trim()
     if (id) { setSelectedEpoch(id); loadLedger(aid, id) }
   }
+
+
 
 
   async function run(label: string, fn: () => Promise<any>, wantEpoch?: string) {
@@ -233,9 +267,13 @@ function App() {
   }
 
 
+
+
   const connectedRow = contribs.find((c) => c.wallet.toLowerCase() === (account || '').toLowerCase())
   const myClaimable = connectedRow ? genFromWei(connectedRow.claimableWei) : 0
   const disabled = busy || loading
+
+
 
 
   return (
@@ -256,7 +294,11 @@ function App() {
       </header>
 
 
+
+
       {err && <div className="ap-err">{err}</div>}
+
+
 
 
       {!account && (
@@ -271,6 +313,8 @@ function App() {
       )}
 
 
+
+
       {account && creating && (
         <main className="ap-main">
           <CreateAgreement
@@ -282,6 +326,8 @@ function App() {
       )}
 
 
+
+
       {account && !creating && !agsLoaded && agreements.length === 0 && (
         <main className="ap-main">
           <div className="ap-empty">
@@ -289,6 +335,8 @@ function App() {
           </div>
         </main>
       )}
+
+
 
 
       {account && !creating && agsLoaded && agreements.length === 0 && (
@@ -306,6 +354,8 @@ function App() {
           </div>
         </main>
       )}
+
+
 
 
       {account && !creating && agsLoaded && agreements.length > 0 && (
@@ -326,6 +376,8 @@ function App() {
           </section>
 
 
+
+
           <section className="ap-agree">
             <div className="ap-agree-item"><span className="ap-k">Repository</span><span className="ap-v">{repo || '—'}</span></div>
             <div className="ap-agree-item"><span className="ap-k">Pool / epoch</span><span className="ap-v">{fmtGen(poolUnits / 1000)} GEN</span></div>
@@ -337,6 +389,8 @@ function App() {
               </span>
             </div>
           </section>
+
+
 
 
           <div className="ap-epochs">
@@ -366,6 +420,8 @@ function App() {
           </div>
 
 
+
+
           <div className="ap-grid">
             <section className="ap-ledger">
               <div className="ap-ledger-head">
@@ -375,6 +431,8 @@ function App() {
                   {prCount ? ' · ' + prCount + ' PRs' : ''}
                 </span>
               </div>
+
+
 
 
               <ul className="ap-rows">
@@ -412,12 +470,18 @@ function App() {
               </ul>
 
 
+
+
               <div className="ap-ledger-foot">this agreement holds <b>{fmtGen(genFromWei(agPoolWei))} GEN</b></div>
             </section>
 
 
+
+
             <aside className="ap-side">
               <IdentityPanel account={account} onVerified={() => { refreshAll(aid) }} />
+
+
 
 
               <div className="ap-minority">
@@ -426,13 +490,13 @@ function App() {
               </div>
 
 
+
+
               <div className="ap-actions">
                 <span className="ap-side-label">Actions · permissionless</span>
                 <div className="ap-action ap-action-col">
-                  <input className="ap-input" value={settleId} onChange={(e) => setSettleId(e.target.value)} placeholder="epoch id" disabled={disabled} />
-                  <input className="ap-input" value={winStart} onChange={(e) => setWinStart(e.target.value)} placeholder="window start · ISO8601 UTC" disabled={disabled} />
-                  <input className="ap-input" value={winEnd} onChange={(e) => setWinEnd(e.target.value)} placeholder="window end · ISO8601 UTC" disabled={disabled} />
-                  <button className="ap-btn" onClick={() => run('Open ' + settleId, () => openSettlement(account!, aid, settleId, winStart, winEnd), settleId)} disabled={disabled}>Open settlement</button>
+                  <input className="ap-input" value={settleId} onChange={(e) => setSettleId(e.target.value)} placeholder="epoch index (0, 1, 2 ...)" disabled={disabled} />
+                  <button className="ap-btn" onClick={() => run('Open epoch ' + settleId, () => openSettlement(account!, aid, settleId), settleId)} disabled={disabled}>Open settlement</button>
                   <button className="ap-btn" onClick={() => run('Collect ' + settleId, () => collectBatch(account!, aid, settleId), settleId)} disabled={disabled}>
                     {progress && progress.opened ? `Collect batch · ${progress.collected}/${progress.to_collect}` : 'Collect batch'}
                   </button>
@@ -459,6 +523,8 @@ function App() {
           </div>
 
 
+
+
           <footer className="ap-foot">
             <a href={EXPLORER + ASSESSOR_CONTRACT_ADDRESS} target="_blank" rel="noopener noreferrer">assessor {shortAddr(ASSESSOR_CONTRACT_ADDRESS)} ↗</a>
             <a href={EXPLORER + VAULT_CONTRACT_ADDRESS} target="_blank" rel="noopener noreferrer">vault {shortAddr(VAULT_CONTRACT_ADDRESS)} ↗</a>
@@ -468,6 +534,8 @@ function App() {
     </div>
   )
 }
+
+
 
 
 export default App

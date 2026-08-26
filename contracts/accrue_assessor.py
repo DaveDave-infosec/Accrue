@@ -29,6 +29,7 @@ class AccrueAssessor(gl.Contract):
     ag_rubric: TreeMap[str, str]
     ag_eligibility: TreeMap[str, str]
     ag_epoch_len: TreeMap[str, u256]
+    ag_created_at: TreeMap[str, u256]          # aid -> creation time (seconds since 1970), anchors derived windows
     ag_pool: TreeMap[str, u256]
     ag_max_per: TreeMap[str, u256]
     ag_challenge: TreeMap[str, u256]
@@ -138,6 +139,20 @@ class AccrueAssessor(gl.Contract):
         assert repo_owner.strip() != "", "repo owner required"
         assert repo_name.strip() != "", "repo name required"
         assert pool_per_epoch > 0, "pool must be positive"
+        assert epoch_length_seconds > 0, "epoch length must be positive (derived windows need it)"
+
+        # Fail closed on any stored policy the contract cannot enforce, so no
+        # eligibility or reserve field is ever decorative.
+        assert reserve_rule.strip() == "return_to_reserve", "unsupported reserve_rule"
+        try:
+            elig = json.loads(eligibility_json)
+        except Exception:
+            elig = None
+        assert isinstance(elig, dict), "eligibility_json must be a JSON object"
+        for k in elig:
+            assert k == "min_merged_prs", "unsupported eligibility key: " + str(k)
+        if "min_merged_prs" in elig:
+            assert int(elig["min_merged_prs"]) >= 0, "min_merged_prs must be >= 0"
 
         c1 = contributor1.lower().strip()
         c2 = contributor2.lower().strip()
@@ -168,6 +183,7 @@ class AccrueAssessor(gl.Contract):
         self.ag_is_contributor[aid + ":" + c2] = True
         self.ag_is_contributor[aid + ":" + c3] = True
         self.ag_epoch_count[aid] = u256(0)
+        self.ag_created_at[aid] = u256(self._iso_to_epoch(str(gl.message_raw["datetime"])))
 
         return aid
 
@@ -176,85 +192,181 @@ class AccrueAssessor(gl.Contract):
         self.ag_epoch_at[aid + ":" + str(n)] = epoch_id
         self.ag_epoch_count[aid] = u256(n + 1)
 
+    # ---- deterministic date helpers (integer math only, no library) ----
+    def _pad(self, n: int, width: int) -> str:
+        s = str(n)
+        while len(s) < width:
+            s = "0" + s
+        return s
+
+    def _iso_to_epoch(self, s: str) -> int:
+        s = s.strip()
+        if "T" in s:
+            datepart, timepart = s.split("T", 1)
+        else:
+            datepart = s
+            timepart = "00:00:00"
+        timepart = timepart.replace("Z", "")
+        if "." in timepart:
+            timepart = timepart.split(".", 1)[0]
+        dp = datepart.split("-")
+        year = int(dp[0])
+        month = int(dp[1])
+        day = int(dp[2])
+        tp = timepart.split(":")
+        hour = int(tp[0])
+        minute = int(tp[1])
+        second = int(tp[2]) if len(tp) > 2 else 0
+        y = year
+        if month <= 2:
+            y -= 1
+        era = (y if y >= 0 else y - 399) // 400
+        yoe = y - era * 400
+        m_adj = month + (-3 if month > 2 else 9)
+        doy = (153 * m_adj + 2) // 5 + day - 1
+        doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
+        days = era * 146097 + doe - 719468
+        return days * 86400 + hour * 3600 + minute * 60 + second
+
+    def _epoch_to_iso(self, secs: int) -> str:
+        days = secs // 86400
+        rem = secs - days * 86400
+        hour = rem // 3600
+        minute = (rem % 3600) // 60
+        second = rem % 60
+        z = days + 719468
+        era = (z if z >= 0 else z - 146096) // 146097
+        doe = z - era * 146097
+        yoe = (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365
+        y = yoe + era * 400
+        doy = doe - (365 * yoe + yoe // 4 - yoe // 100)
+        mp = (5 * doy + 2) // 153
+        d = doy - (153 * mp + 2) // 5 + 1
+        m = mp + 3 if mp < 10 else mp - 9
+        if m <= 2:
+            y += 1
+        return (self._pad(y, 4) + "-" + self._pad(m, 2) + "-" + self._pad(d, 2) +
+                "T" + self._pad(hour, 2) + ":" + self._pad(minute, 2) + ":" + self._pad(second, 2) + "Z")
+
     # =====================================================================
     # PHASE 1: open_settlement
-    # Fetches the PR list once, freezes the epoch window and the exact set of
-    # in-window, not-yet-counted merged PRs. Reverts (no partial state) if the
-    # list cannot be fetched or the window holds more than 50 PRs.
+    # The caller supplies only an epoch INDEX. The contract DERIVES the window
+    # from the agreement's creation time and epoch length, refuses to open an
+    # epoch whose window has not yet ended (no premature settlement), pages the
+    # PR list to completion or FAILS CLOSED, and freezes the exact set of
+    # in-window, not-yet-counted merged PRs.
     # =====================================================================
     @gl.public.write
-    def open_settlement(
-        self,
-        agreement_id: str,
-        epoch_id: str,
-        window_start: str,
-        window_end: str,
-    ) -> str:
+    def open_settlement(self, agreement_id: str, epoch_index: str) -> str:
         aid = agreement_id
         assert self.ag_exists.get(aid, False), "agreement does not exist"
+
+        try:
+            idx = int(epoch_index)
+        except Exception:
+            idx = -1
+        assert idx >= 0, "epoch index must be a non-negative integer"
+
+        epoch_id = str(idx)
         ekey = aid + ":" + epoch_id
         assert not self.epoch_settled.get(ekey, False), "epoch already settled"
         assert not self.epoch_opened.get(ekey, False), "epoch already opened"
-        ws = window_start.strip()
-        we = window_end.strip()
-        assert ws != "" and we != "", "window start and end required (ISO8601 UTC)"
-        assert ws < we, "window start must be before window end"
 
-        api_url = (
+        # DERIVE the window from agreement state. The caller cannot set dates.
+        created = int(self.ag_created_at.get(aid, u256(0)))
+        ln = int(self.ag_epoch_len[aid])
+        assert ln > 0, "epoch length must be positive"
+        ws_sec = created + idx * ln
+        we_sec = created + (idx + 1) * ln
+
+        # Refuse to open an epoch before its window has closed.
+        now_sec = self._iso_to_epoch(str(gl.message_raw["datetime"]))
+        assert now_sec >= we_sec, "epoch window has not ended yet, cannot open it early"
+
+        ws_iso = self._epoch_to_iso(ws_sec)
+        we_iso = self._epoch_to_iso(we_sec)
+
+        api_base = (
             "https://api.github.com/repos/" + self.ag_repo_owner[aid] + "/" +
             self.ag_repo_name[aid] + "/pulls?state=closed&sort=created&direction=asc&per_page=100"
         )
 
         def build_list() -> str:
-            try:
-                raw = gl.nondet.web.render(api_url, mode="text")
-            except Exception:
-                return "EVIDENCE_UNAVAILABLE"
-            text = str(raw)
-            if not text.lstrip().startswith("["):
-                return "EVIDENCE_UNAVAILABLE"
-            try:
-                data = json.loads(text)
-            except Exception:
-                return "EVIDENCE_UNAVAILABLE"
-            merged = []
-            for pr in data:
-                if not isinstance(pr, dict):
+            max_pages = 10
+            all_merged = []
+            page = 1
+            complete = False
+            while page <= max_pages:
+                url = api_base + "&page=" + str(page)
+                try:
+                    raw = gl.nondet.web.render(url, mode="text")
+                except Exception:
+                    return "EVIDENCE_UNAVAILABLE"
+                if raw is None:
+                    return "EVIDENCE_UNAVAILABLE"
+                text = str(raw)
+                if not text.lstrip().startswith("["):
+                    return "EVIDENCE_UNAVAILABLE"
+                try:
+                    data = json.loads(text)
+                except Exception:
+                    return "EVIDENCE_UNAVAILABLE"
+                count = 0
+                for pr in data:
+                    count += 1
+                    if not isinstance(pr, dict):
+                        continue
+                    if pr.get("merged_at") is None:
+                        continue
+                    user = pr.get("user") or {}
+                    login = str(user.get("login", "")).lower() if isinstance(user, dict) else ""
+                    all_merged.append({
+                        "number": int(pr.get("number", 0)),
+                        "author": login,
+                        "merged_at": str(pr.get("merged_at", "")),
+                        "title": str(pr.get("title", "")),
+                    })
+                if count < 100:
+                    complete = True
+                    break
+                page += 1
+            if not complete:
+                # Hit the page ceiling with a full final page: more may exist.
+                return "TOO_MANY_PAGES"
+            # dedupe by number, then stable sort
+            seen = {}
+            deduped = []
+            for pr in all_merged:
+                n = pr["number"]
+                if n in seen:
                     continue
-                if pr.get("merged_at") is None:
-                    continue
-                user = pr.get("user") or {}
-                login = str(user.get("login", "")).lower() if isinstance(user, dict) else ""
-                merged.append({
-                    "number": int(pr.get("number", 0)),
-                    "author": login,
-                    "merged_at": str(pr.get("merged_at", "")),
-                    "title": str(pr.get("title", "")),
-                })
-            merged.sort(key=lambda x: (x["merged_at"], x["number"]))
-            return json.dumps({"pulls": merged}, sort_keys=True)
+                seen[n] = True
+                deduped.append(pr)
+            deduped.sort(key=lambda x: (x["merged_at"], x["number"]))
+            return json.dumps({"pulls": deduped}, sort_keys=True)
 
         pkg = gl.eq_principle.strict_eq(build_list)
         assert pkg != "EVIDENCE_UNAVAILABLE", "PR list unavailable right now, retry in a moment"
+        assert pkg != "TOO_MANY_PAGES", "repository has more pull requests than one settlement can safely page, cannot settle without omitting work"
 
         parsed = json.loads(pkg)
         all_pulls = parsed.get("pulls", [])
 
         frozen = []
         for pr in all_pulls:
-            m = str(pr.get("merged_at", ""))
-            if m < ws or m >= we:
+            msec = self._iso_to_epoch(str(pr.get("merged_at", "")))
+            if msec < ws_sec or msec >= we_sec:
                 continue
             num = int(pr.get("number", 0))
             if self.counted_pr.get(aid + ":" + str(num), False):
                 continue
             frozen.append(pr)
 
-        assert len(frozen) <= 50, "more than 50 PRs in this window, narrow the window and reopen"
+        assert len(frozen) <= 50, "more than 50 PRs in this window, cannot settle safely"
 
         self.epoch_opened[ekey] = True
-        self.epoch_win_start[ekey] = ws
-        self.epoch_win_end[ekey] = we
+        self.epoch_win_start[ekey] = ws_iso
+        self.epoch_win_end[ekey] = we_iso
         self.epoch_collected[ekey] = u256(0)
         self.epoch_to_collect[ekey] = u256(len(frozen))
 
@@ -269,7 +381,7 @@ class AccrueAssessor(gl.Contract):
                 "title": str(pr.get("title", "")),
             }, sort_keys=True)
 
-        return "OPENED to_collect=" + str(len(frozen))
+        return "OPENED epoch=" + epoch_id + " window=" + ws_iso + ".." + we_iso + " to_collect=" + str(len(frozen))
 
     # =====================================================================
     # PHASE 2: collect_batch
@@ -454,9 +566,9 @@ class AccrueAssessor(gl.Contract):
 
     # =====================================================================
     # PHASE 3: finalize_settlement
-    # Blocks until every frozen PR is collected. Then assembles the enriched
-    # evidence, runs the band-gated consensus allocation, and writes the split,
-    # reserve, minority note, and outcome. Marks each frozen PR counted.
+    # Blocks until every frozen PR is collected. Enforces the stored eligibility
+    # and reserve policies, runs the band-gated consensus allocation, and writes
+    # the split, reserve, minority note, and outcome. Marks each frozen PR counted.
     # =====================================================================
     @gl.public.write
     def finalize_settlement(self, agreement_id: str, epoch_id: str) -> str:
@@ -479,8 +591,21 @@ class AccrueAssessor(gl.Contract):
         max_per = int(self.ag_max_per[aid])
         rubric_local = self.ag_rubric[aid]
 
+        # Enforce the stored eligibility policy. Validated at creation, so only
+        # known keys are present; read min_merged_prs (default 0).
+        min_prs = 0
+        try:
+            elig = json.loads(self.ag_eligibility.get(aid, "{}"))
+            if isinstance(elig, dict) and "min_merged_prs" in elig:
+                min_prs = int(elig["min_merged_prs"])
+        except Exception:
+            min_prs = 0
+
+        # Enforce the stored reserve policy (validated at creation).
+        assert self.ag_reserve_rule.get(aid, "") == "return_to_reserve", "unsupported reserve_rule"
+
         new_numbers = []
-        epoch_pulls = []
+        by_contrib = {}   # wallet -> list of pull records (insertion order is deterministic)
         for i in range(to_collect):
             num_str = self.epoch_prnum_at.get(ekey + ":" + str(i), "")
             num = int(num_str)
@@ -503,7 +628,7 @@ class AccrueAssessor(gl.Contract):
             msgs = deep.get("commit_messages", [])
             if len(msgs) > 8:
                 msgs = msgs[:8]
-            epoch_pulls.append({
+            pull = {
                 "number": num,
                 "contributor": wallet,
                 "merged_at": str(base.get("merged_at", "")),
@@ -515,7 +640,19 @@ class AccrueAssessor(gl.Contract):
                 "approvals": int(deep.get("approvals", 0)),
                 "files": files,
                 "commit_messages": msgs,
-            })
+            }
+            if wallet not in by_contrib:
+                by_contrib[wallet] = []
+            by_contrib[wallet].append(pull)
+
+        # A contributor below the merged-PR threshold is ineligible: their work
+        # is excluded from the evidence entirely, so they score and receive 0.
+        epoch_pulls = []
+        for wallet in by_contrib:
+            if len(by_contrib[wallet]) >= min_prs:
+                for pull in by_contrib[wallet]:
+                    epoch_pulls.append(pull)
+        epoch_pulls.sort(key=lambda x: (x["merged_at"], x["number"]))
 
         if len(epoch_pulls) == 0:
             for num in new_numbers:
@@ -523,7 +660,7 @@ class AccrueAssessor(gl.Contract):
             self.epoch_settled[ekey] = True
             self._register_epoch(aid, epoch_id)
             self.epoch_outcome[ekey] = "ReturnToReserve"
-            self.epoch_reasoning[ekey] = "No merged work by an approved, verified contributor in this window."
+            self.epoch_reasoning[ekey] = "No merged work by an approved, verified, eligible contributor in this window."
             self.epoch_minority[ekey] = ""
             self.epoch_reserve[ekey] = u256(pool_local)
             self.epoch_pr_count[ekey] = u256(0)
@@ -657,6 +794,7 @@ class AccrueAssessor(gl.Contract):
             "challenge_window_seconds": str(self.ag_challenge.get(aid, u256(0))),
             "reserve_rule": self.ag_reserve_rule.get(aid, ""),
             "epoch_count": str(self.ag_epoch_count.get(aid, u256(0))),
+            "created_at": self._epoch_to_iso(int(self.ag_created_at.get(aid, u256(0)))) if self.ag_exists.get(aid, False) else "",
         }
 
     @gl.public.view
