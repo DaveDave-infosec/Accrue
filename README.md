@@ -9,13 +9,13 @@ project manager sets anyone's share.
 
 > Contribution becomes compensation.
 
-**Live app:** _(deployment URL)_
+**Live app:** https://accrue-genlayer.vercel.app
 **Network:** GenLayer Studio Network (chain 61999)
 
 | Contract | Address |
 | --- | --- |
-| Assessor | `0xFe1604EB2B6B09Df45AB89ac11b05a211b9E350F` |
-| Vault | `0x72073670362EB5ceabAAD5Ad8213FaEFAcF8160A` |
+| Assessor | `0xF79Aa9196e058FaF2a41d38601A4695B05cB88DE` |
+| Vault | `0x46eA4080cE0B058B9D41A8b026a0B15daF66d565` |
 
 ---
 
