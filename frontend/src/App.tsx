@@ -7,7 +7,7 @@ import {
 import {
   getAgreementCount, getAgreement, getContributors, getEpochs, getEpoch,
   getEpochAllocation, getSettlementProgress, getHandle, isVerified, getClaimable, getClaimed,
-  getAgreementPool,
+  getAgreementPool, isFinalized,
   openSettlement, collectBatch, finalizeSettlement, finalizeEpoch, claim as claimShare, fundPool,
 } from './lib/accrue'
 import { ASSESSOR_CONTRACT_ADDRESS, VAULT_CONTRACT_ADDRESS } from './lib/constants'
@@ -15,12 +15,8 @@ import IdentityPanel from './IdentityPanel'
 import CreateAgreement from './CreateAgreement'
 
 
-
-
 const EXPLORER = 'https://explorer-studio.genlayer.com/address/'
 const tones = ['is-sage', 'is-walnut', 'is-slate']
-
-
 
 
 function shortAddr(a: string) { return a.slice(0, 6) + '...' + a.slice(-4) }
@@ -28,15 +24,11 @@ function fmtGen(n: number) { return n.toFixed(3) }
 function genFromWei(w: bigint) { return Number(w) / 1e18 }
 
 
-
-
 type AgSummary = { id: string; label: string; repo: string }
 type Contributor = {
   wallet: string; handle: string; verified: boolean
   allocUnits: number; claimableWei: bigint; claimedWei: bigint
 }
-
-
 
 
 function App() {
@@ -47,13 +39,9 @@ function App() {
   const [creating, setCreating] = useState(false)
 
 
-
-
   const [agreements, setAgreements] = useState<AgSummary[]>([])
   const [agsLoaded, setAgsLoaded] = useState(false)
   const [aid, setAid] = useState('')
-
-
 
 
   const [repo, setRepo] = useState('')
@@ -61,8 +49,6 @@ function App() {
   const [epochLen, setEpochLen] = useState('')
   const [rubric, setRubric] = useState<[string, number][]>([])
   const [agPoolWei, setAgPoolWei] = useState<bigint>(0n)
-
-
 
 
   const [epochs, setEpochs] = useState<string[]>([])
@@ -74,16 +60,13 @@ function App() {
   const [contribs, setContribs] = useState<Contributor[]>([])
 
 
-
-
   const [settleId, setSettleId] = useState('0')
-  const [progress, setProgress] = useState<any>(null)
-  const [finalId, setFinalId] = useState('0')
+  const [settleProgress, setSettleProgress] = useState<any>(null)
+  const [settleReleased, setSettleReleased] = useState(false)
+  const [settleLoading, setSettleLoading] = useState(false)
   const [fundAmt, setFundAmt] = useState('1')
   const [epochInput, setEpochInput] = useState('')
   const [action, setAction] = useState('')
-
-
 
 
   const loadAgreements = useCallback(async (): Promise<AgSummary[]> => {
@@ -106,8 +89,6 @@ function App() {
   }, [])
 
 
-
-
   const loadLedger = useCallback(async (agId: string, epochId: string) => {
     setLoading(true); setErr('')
     try {
@@ -124,10 +105,8 @@ function App() {
       } catch { setRubric([]) }
 
 
-
-
       if (!epochId) {
-        setOutcome(''); setReserveUnits(0); setMinority(''); setPrCount(''); setProgress(null)
+        setOutcome(''); setReserveUnits(0); setMinority(''); setPrCount('')
         const blank = await Promise.all((cs as string[]).filter(Boolean).map(async (w) => {
           const [handle, verified, claimable, claimed] = await Promise.all([
             getHandle(w), isVerified(w), getClaimable(agId, w), getClaimed(agId, w),
@@ -142,16 +121,11 @@ function App() {
       }
 
 
-
-
       const ep = await getEpoch(agId, epochId)
       setOutcome(ep.outcome)
       setReserveUnits(Number(ep.reserve))
       setMinority(ep.minority_note)
       setPrCount(ep.pr_count)
-      try { setProgress(await getSettlementProgress(agId, epochId)) } catch { setProgress(null) }
-
-
 
 
       const rows: Contributor[] = await Promise.all(
@@ -175,6 +149,25 @@ function App() {
   }, [])
 
 
+  const loadSettleInfo = useCallback(async (agId: string, epochIdx: string) => {
+    if (!agId || epochIdx.trim() === '') { setSettleProgress(null); setSettleReleased(false); return }
+    setSettleLoading(true)
+    try {
+      const [prog, ep, released] = await Promise.all([
+        getSettlementProgress(agId, epochIdx).catch(() => null),
+        getEpoch(agId, epochIdx).catch(() => null),
+        isFinalized(agId, epochIdx).catch(() => false),
+      ])
+      const settled = Boolean((prog && prog.settled) || (ep && ep.settled))
+      const merged = prog
+        ? { ...prog, settled }
+        : { opened: false, settled, to_collect: '0', collected: '0', window_start: '', window_end: '' }
+      setSettleProgress(merged)
+      setSettleReleased(Boolean(released))
+    } finally {
+      setSettleLoading(false)
+    }
+  }, [])
 
 
   const refreshAll = useCallback(async (wantAid?: string, wantEpoch?: string) => {
@@ -196,8 +189,6 @@ function App() {
   }, [loadAgreements, loadLedger, aid, selectedEpoch])
 
 
-
-
   useEffect(() => {
     getCurrentAccount().then((a) => { if (a) { setAccount(a); refreshAll() } })
     const unsub = onAccountChange((a) => { setAccount(a); if (a) refreshAll() })
@@ -206,6 +197,11 @@ function App() {
   }, [])
 
 
+  useEffect(() => {
+    if (!account || !aid) { setSettleProgress(null); setSettleReleased(false); return }
+    const t = setTimeout(() => { loadSettleInfo(aid, settleId) }, 350)
+    return () => clearTimeout(t)
+  }, [account, aid, settleId, loadSettleInfo])
 
 
   async function connect() {
@@ -225,8 +221,6 @@ function App() {
   }
 
 
-
-
   async function selectAgreement(id: string) {
     setErr(''); setAction('')
     setAid(id); setSelectedEpoch('')
@@ -244,8 +238,6 @@ function App() {
   }
 
 
-
-
   async function run(label: string, fn: () => Promise<any>, wantEpoch?: string) {
     if (!account) { setErr('Connect a wallet first.'); return }
     setBusy(true)
@@ -254,9 +246,13 @@ function App() {
       await fn()
       setAction(label + ' · confirmed')
       await refreshAll(aid, wantEpoch)
+      await loadSettleInfo(aid, settleId)
       for (const wait of [3000, 6000, 10000]) {
         setTimeout(async () => {
-          try { if (aid) setAgPoolWei(await getAgreementPool(aid) as bigint) } catch { /* ignore */ }
+          try {
+            if (aid) setAgPoolWei(await getAgreementPool(aid) as bigint)
+            if (aid) await loadSettleInfo(aid, settleId)
+          } catch { /* ignore */ }
         }, wait)
       }
     } catch (e: any) {
@@ -267,13 +263,46 @@ function App() {
   }
 
 
-
-
   const connectedRow = contribs.find((c) => c.wallet.toLowerCase() === (account || '').toLowerCase())
   const myClaimable = connectedRow ? genFromWei(connectedRow.claimableWei) : 0
   const disabled = busy || loading
 
+  // ---- guided settlement flow: derive the phase for the epoch in the field ----
+  const sp = settleProgress
+  const sOpened = Boolean(sp && sp.opened)
+  const sSettled = Boolean(sp && sp.settled)
+  const sToCollect = sp ? Number(sp.to_collect || 0) : 0
+  const sCollected = sp ? Number(sp.collected || 0) : 0
+  const sFullyCollected = sOpened && sCollected >= sToCollect
+  const phase: 'none' | 'open' | 'collect' | 'finalize' | 'release' | 'released' =
+    !sp ? 'none'
+    : settleReleased ? 'released'
+    : sSettled ? 'release'
+    : sFullyCollected ? 'finalize'
+    : sOpened ? 'collect'
+    : 'open'
 
+  const phaseLabel: Record<string, string> = {
+    none: '—', open: 'Not opened yet', collect: 'Collecting evidence',
+    finalize: 'Ready to finalize', release: 'Settled · release funds', released: 'Released',
+  }
+  const phaseHint: Record<string, string> = {
+    none: 'Enter an epoch number to begin. Epoch 0 is the first window after the agreement was created.',
+    open: 'Freeze this epoch’s window and its merged pull requests. The window must already have ended.',
+    collect: `Fetch evidence in batches until all ${sToCollect} pull request${sToCollect === 1 ? '' : 's'} are collected.`,
+    finalize: 'All evidence is in. Finalize to let validators score the work and divide the pool.',
+    release: 'Consensus is recorded. Release from the vault to make shares claimable, once the challenge window has passed.',
+    released: 'Shares are recorded as claimable. Contributors can claim below.',
+  }
+
+  const order = ['open', 'collect', 'finalize', 'release']
+  const curIdx = phase === 'released' ? 4 : order.indexOf(phase)
+  function stepState(step: string): 'done' | 'current' | 'locked' {
+    const i = order.indexOf(step)
+    if (curIdx > i) return 'done'
+    if (curIdx === i) return 'current'
+    return 'locked'
+  }
 
 
   return (
@@ -294,11 +323,7 @@ function App() {
       </header>
 
 
-
-
       {err && <div className="ap-err">{err}</div>}
-
-
 
 
       {!account && (
@@ -313,8 +338,6 @@ function App() {
       )}
 
 
-
-
       {account && creating && (
         <main className="ap-main">
           <CreateAgreement
@@ -326,8 +349,6 @@ function App() {
       )}
 
 
-
-
       {account && !creating && !agsLoaded && agreements.length === 0 && (
         <main className="ap-main">
           <div className="ap-empty">
@@ -335,8 +356,6 @@ function App() {
           </div>
         </main>
       )}
-
-
 
 
       {account && !creating && agsLoaded && agreements.length === 0 && (
@@ -354,8 +373,6 @@ function App() {
           </div>
         </main>
       )}
-
-
 
 
       {account && !creating && agsLoaded && agreements.length > 0 && (
@@ -376,8 +393,6 @@ function App() {
           </section>
 
 
-
-
           <section className="ap-agree">
             <div className="ap-agree-item"><span className="ap-k">Repository</span><span className="ap-v">{repo || '—'}</span></div>
             <div className="ap-agree-item"><span className="ap-k">Pool / epoch</span><span className="ap-v">{fmtGen(poolUnits / 1000)} GEN</span></div>
@@ -389,8 +404,6 @@ function App() {
               </span>
             </div>
           </section>
-
-
 
 
           <div className="ap-epochs">
@@ -420,8 +433,6 @@ function App() {
           </div>
 
 
-
-
           <div className="ap-grid">
             <section className="ap-ledger">
               <div className="ap-ledger-head">
@@ -431,8 +442,6 @@ function App() {
                   {prCount ? ' · ' + prCount + ' PRs' : ''}
                 </span>
               </div>
-
-
 
 
               <ul className="ap-rows">
@@ -470,18 +479,12 @@ function App() {
               </ul>
 
 
-
-
               <div className="ap-ledger-foot">this agreement holds <b>{fmtGen(genFromWei(agPoolWei))} GEN</b></div>
             </section>
 
 
-
-
             <aside className="ap-side">
               <IdentityPanel account={account} onVerified={() => { refreshAll(aid) }} />
-
-
 
 
               <div className="ap-minority">
@@ -490,39 +493,80 @@ function App() {
               </div>
 
 
-
-
               <div className="ap-actions">
-                <span className="ap-side-label">Actions · permissionless</span>
-                <div className="ap-action ap-action-col">
-                  <input className="ap-input" value={settleId} onChange={(e) => setSettleId(e.target.value)} placeholder="epoch index (0, 1, 2 ...)" disabled={disabled} />
-                  <button className="ap-btn" onClick={() => run('Open epoch ' + settleId, () => openSettlement(account!, aid, settleId), settleId)} disabled={disabled}>Open settlement</button>
-                  <button className="ap-btn" onClick={() => run('Collect ' + settleId, () => collectBatch(account!, aid, settleId), settleId)} disabled={disabled}>
-                    {progress && progress.opened ? `Collect batch · ${progress.collected}/${progress.to_collect}` : 'Collect batch'}
-                  </button>
-                  <button className="ap-btn" onClick={() => run('Finalize settlement ' + settleId, () => finalizeSettlement(account!, aid, settleId), settleId)} disabled={disabled}>Finalize settlement</button>
-                  {progress && progress.opened && (
-                    <span className="ap-progress">window {progress.window_start} to {progress.window_end} · collected {progress.collected}/{progress.to_collect}{progress.settled ? ' · settled' : ''}</span>
-                  )}
+                <span className="ap-side-label">Settle an epoch · permissionless</span>
+
+                <div className="ap-flow-epoch">
+                  <label className="ap-flow-lbl">Epoch</label>
+                  <input className="ap-input ap-input-sm" value={settleId} onChange={(e) => setSettleId(e.target.value)} placeholder="0" disabled={disabled} />
+                  <span className={`ap-flow-phase is-${phase}`}>{settleLoading ? 'checking…' : phaseLabel[phase]}</span>
                 </div>
-                <div className="ap-action">
-                  <input className="ap-input" value={finalId} onChange={(e) => setFinalId(e.target.value)} placeholder="epoch id" disabled={disabled} />
-                  <button className="ap-btn" onClick={() => run('Finalize ' + finalId, () => finalizeEpoch(account!, aid, finalId), finalId)} disabled={disabled}>Release funds (vault)</button>
+                <p className="ap-flow-note">{phaseHint[phase]}</p>
+
+                <ol className="ap-flow">
+                  <li className={`ap-step is-${stepState('open')}`}>
+                    <span className="ap-step-num">{stepState('open') === 'done' ? '✓' : '1'}</span>
+                    <div className="ap-step-body">
+                      <span className="ap-step-title">Open settlement</span>
+                      <span className="ap-step-hint">Freeze the epoch window and its merged pull requests.</span>
+                      {phase === 'open' && (
+                        <button className="ap-btn ap-step-btn" disabled={disabled} onClick={() => run('Open epoch ' + settleId, () => openSettlement(account!, aid, settleId), settleId)}>Open epoch {settleId}</button>
+                      )}
+                    </div>
+                  </li>
+                  <li className={`ap-step is-${stepState('collect')}`}>
+                    <span className="ap-step-num">{stepState('collect') === 'done' ? '✓' : '2'}</span>
+                    <div className="ap-step-body">
+                      <span className="ap-step-title">Collect evidence{sOpened ? ` · ${sCollected}/${sToCollect}` : ''}</span>
+                      <span className="ap-step-hint">Fetch each pull request’s diff, reviews, and commits, in batches.</span>
+                      {phase === 'collect' && (
+                        <button className="ap-btn ap-step-btn" disabled={disabled} onClick={() => run('Collect ' + settleId, () => collectBatch(account!, aid, settleId), settleId)}>Collect batch · {sCollected}/{sToCollect}</button>
+                      )}
+                    </div>
+                  </li>
+                  <li className={`ap-step is-${stepState('finalize')}`}>
+                    <span className="ap-step-num">{stepState('finalize') === 'done' ? '✓' : '3'}</span>
+                    <div className="ap-step-body">
+                      <span className="ap-step-title">Finalize settlement</span>
+                      <span className="ap-step-hint">Validators score the evidence and divide the pool by consensus.</span>
+                      {phase === 'finalize' && (
+                        <button className="ap-btn ap-step-btn" disabled={disabled} onClick={() => run('Finalize settlement ' + settleId, () => finalizeSettlement(account!, aid, settleId), settleId)}>Finalize settlement</button>
+                      )}
+                    </div>
+                  </li>
+                  <li className={`ap-step is-${stepState('release')}`}>
+                    <span className="ap-step-num">{stepState('release') === 'done' ? '✓' : '4'}</span>
+                    <div className="ap-step-body">
+                      <span className="ap-step-title">Release funds</span>
+                      <span className="ap-step-hint">After the challenge window, record each share as claimable in the vault.</span>
+                      {phase === 'release' && (
+                        <button className="ap-btn ap-step-btn" disabled={disabled} onClick={() => run('Release ' + settleId, () => finalizeEpoch(account!, aid, settleId), settleId)}>Release funds</button>
+                      )}
+                    </div>
+                  </li>
+                </ol>
+
+                {sp && (sp.window_start || sp.window_end) && (
+                  <p className="ap-flow-window">window {sp.window_start} → {sp.window_end}</p>
+                )}
+
+                <div className="ap-mini">
+                  <span className="ap-mini-lbl">Fund pool</span>
+                  <div className="ap-mini-row">
+                    <input className="ap-input ap-input-sm" value={fundAmt} onChange={(e) => setFundAmt(e.target.value)} placeholder="GEN" disabled={disabled} />
+                    <button className="ap-btn ap-btn-sm" disabled={disabled} onClick={() => run('Fund ' + fundAmt + ' GEN', () => fundPool(account!, aid, BigInt(Math.round(parseFloat(fundAmt || '0') * 1e18))))}>Fund</button>
+                  </div>
                 </div>
-                <div className="ap-action">
-                  <input className="ap-input" value={fundAmt} onChange={(e) => setFundAmt(e.target.value)} placeholder="GEN" disabled={disabled} />
-                  <button className="ap-btn" onClick={() => run('Fund ' + fundAmt + ' GEN', () => fundPool(account!, aid, BigInt(Math.round(parseFloat(fundAmt || '0') * 1e18))))} disabled={disabled}>Fund pool</button>
-                </div>
+
                 <button className="ap-btn ap-btn-primary" disabled={disabled || myClaimable <= 0} onClick={() => run('Claim', () => claimShare(account!, aid))}>
                   {myClaimable > 0 ? `Claim ${fmtGen(myClaimable)} GEN` : 'Nothing to claim'}
                 </button>
+
                 {action && <p className="ap-status">{action}</p>}
-                {loading && !action && <p className="ap-status">reading chain...</p>}
+                {(loading || settleLoading) && !action && <p className="ap-status">reading chain…</p>}
               </div>
             </aside>
           </div>
-
-
 
 
           <footer className="ap-foot">
@@ -534,8 +578,6 @@ function App() {
     </div>
   )
 }
-
-
 
 
 export default App
