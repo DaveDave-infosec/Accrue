@@ -394,8 +394,17 @@ class AccrueAssessor(gl.Contract):
     def collect_batch(self, agreement_id: str, epoch_id: str) -> str:
         aid = agreement_id
         assert self.ag_exists.get(aid, False), "agreement does not exist"
+        # Canonicalize the epoch id exactly as open_settlement does, so "0",
+        # "00" and " 0 " all address the same epoch instead of silently
+        # missing an epoch that was opened under the canonical form.
+        try:
+            eidx = int(epoch_id)
+        except Exception:
+            eidx = -1
+        assert eidx >= 0, "epoch index must be a non-negative integer"
+        epoch_id = str(eidx)
         ekey = aid + ":" + epoch_id
-        assert self.epoch_opened.get(ekey, False), "epoch not opened"
+        assert self.epoch_opened.get(ekey, False), "epoch not opened, run open_settlement for this epoch first"
         assert not self.epoch_settled.get(ekey, False), "epoch already settled"
 
         to_collect = int(self.epoch_to_collect.get(ekey, u256(0)))
@@ -574,8 +583,16 @@ class AccrueAssessor(gl.Contract):
     def finalize_settlement(self, agreement_id: str, epoch_id: str) -> str:
         aid = agreement_id
         assert self.ag_exists.get(aid, False), "agreement does not exist"
+        # Canonicalize the epoch id exactly as open_settlement does, so a
+        # non-canonical form ("00") cannot miss an epoch that was opened.
+        try:
+            eidx = int(epoch_id)
+        except Exception:
+            eidx = -1
+        assert eidx >= 0, "epoch index must be a non-negative integer"
+        epoch_id = str(eidx)
         ekey = aid + ":" + epoch_id
-        assert self.epoch_opened.get(ekey, False), "epoch not opened"
+        assert self.epoch_opened.get(ekey, False), "epoch not opened, run open_settlement then collect_batch for this epoch first"
         assert not self.epoch_settled.get(ekey, False), "epoch already settled"
 
         to_collect = int(self.epoch_to_collect.get(ekey, u256(0)))

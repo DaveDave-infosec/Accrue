@@ -70,6 +70,14 @@ class AccrueVault(gl.Contract):
     @gl.public.write
     def finalize_epoch(self, agreement_id: str, epoch_id: str) -> str:
         aid = agreement_id
+        # Canonicalize the epoch id the same way the assessor does, so the
+        # vault's records and its assessor lookups always agree.
+        try:
+            eidx = int(epoch_id)
+        except Exception:
+            eidx = -1
+        assert eidx >= 0, "epoch index must be a non-negative integer"
+        epoch_id = str(eidx)
         ekey = aid + ":" + epoch_id
         assert not self.epoch_finalized.get(ekey, False), "epoch already finalized"
 

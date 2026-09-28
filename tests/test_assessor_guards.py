@@ -182,3 +182,29 @@ def test_open_fails_closed_on_page_overflow(direct_vm, direct_deploy):
     direct_vm.warp(AFTER)
     with pytest.raises(Exception):  # reverts rather than settling on partial data
         c.open_settlement("1", "0")
+
+
+def test_noncanonical_epoch_id_addresses_the_same_epoch(direct_vm, direct_deploy):
+    """An epoch opened as "0" must also be reachable as "00" or " 0 ".
+
+    Before this was normalized, open_settlement stored the epoch under its
+    canonical id while collect_batch/finalize_settlement keyed on the raw
+    string, so a non-canonical id reverted with "epoch not opened" even though
+    the epoch had been opened.
+    """
+    direct_vm.sender = WALLET_A
+    direct_vm.warp(T0)
+    c = direct_deploy(ASSESSOR, sdk_version=SDK)
+    _create(c, epoch_len=3600)
+    direct_vm.mock_web(r"/pulls\?", EMPTY_LIST)
+    direct_vm.warp(AFTER)
+
+    assert "OPENED" in str(c.open_settlement("1", "0"))
+
+    # the same epoch, addressed non-canonically, must resolve (not revert)
+    progress = c.get_settlement_progress("1", "0")
+    assert progress["opened"] is True
+    assert "ALL_COLLECTED" in str(c.collect_batch("1", "00"))
+    # and re-opening under a non-canonical id is still refused
+    with pytest.raises(Exception):
+        c.open_settlement("1", "00")
