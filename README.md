@@ -10,6 +10,8 @@ project manager sets anyone's share.
 > Contribution becomes compensation.
 
 **Live app:** https://accrue-genlayer.vercel.app
+
+> **Reviewing this project?** Read [REVIEWER_GUIDE.md](REVIEWER_GUIDE.md) first. Settlement runs in four ordered phases, and the contract refuses out-of-order calls on purpose. The guide walks through the exact sequence and explains every guard message.
 **Network:** GenLayer Studio Network (chain 61999)
 
 | Contract | Address |
